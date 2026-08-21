@@ -109,6 +109,12 @@ BRAND_MUTED = "#6B7685"
 CHART_COLORWAY = ["#0B3D91", "#1F8A70", "#D97706", "#C0392B", "#6C5CE7",
                    "#0FA3B1", "#8D6A9F", "#3D5A80", "#B23A48", "#588157"]
 
+# Charts are intentionally switched off for now -- the dashboard shows only
+# KPI cards + clean District-wise / AC-wise report tables + downloads. All
+# chart code below is kept intact and working (it was fully tested); flip
+# this back to True whenever charts are wanted again -- no other change needed.
+SHOW_CHARTS = False
+
 FORM_TYPE_LABELS = {
     "FORM6": "Form 6 (New Registration)",
     "FORM6A": "Form 6A (NRI Elector)",
@@ -819,43 +825,48 @@ with tab1:
             kpi_card(c8, "Hearing Scheduled", fmt_int(hearing_sched),
                      f"{fmt_pct(safe_div(hearing_sched, total_received))} of received", color=BRAND_WARN)
 
-            section_title("Visual Analysis")
-            v1, v2 = st.columns(2)
-            with v1:
-                status_sums = filtered[FP_STATUS_COLS].sum()
-                status_sums = status_sums[status_sums > 0].sort_values(ascending=False)
-                status_labels = [s.replace("_", " ") for s in status_sums.index]
-                if len(status_sums):
-                    fig = px.pie(names=status_labels, values=status_sums.values, hole=0.5,
-                                 title="Current Status Mix (all forms sum to exactly one stage each)")
-                    fig.update_traces(textinfo="percent+label", textposition="inside")
-                    st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
-            with v2:
-                ftype_sums = filtered.groupby("Form_Type_Label")["Total_Received"].sum().sort_values(ascending=False)
-                fig = px.bar(x=ftype_sums.values, y=ftype_sums.index, orientation="h",
-                             title="Total Forms Received by Form Type",
-                             labels={"x": "Forms Received", "y": ""})
-                fig.update_traces(marker_color=BRAND_PRIMARY)
-                st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
+            # status_sums/status_labels are needed by the PDF export below even
+            # when the on-screen charts are switched off, so compute them here
+            # unconditionally.
+            status_sums = filtered[FP_STATUS_COLS].sum()
+            status_sums = status_sums[status_sums > 0].sort_values(ascending=False)
+            status_labels = [s.replace("_", " ") for s in status_sums.index]
 
-            v3, v4 = st.columns(2)
-            with v3:
-                dist_cmp = filtered.groupby("District")[["Unprocessed", "In_Progress", "Finalized"]].sum()
-                dist_cmp = dist_cmp.loc[dist_cmp.sum(axis=1).sort_values(ascending=False).index]
-                fig = go.Figure()
-                for col, color in zip(["Unprocessed", "In_Progress", "Finalized"],
-                                       [BRAND_DANGER, BRAND_WARN, BRAND_ACCENT]):
-                    fig.add_bar(name=col.replace("_", " "), x=dist_cmp.index, y=dist_cmp[col], marker_color=color)
-                fig.update_layout(barmode="stack", title="District-wise Processing Status (stacked)")
-                st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
-            with v4:
-                ac_focus = filtered.groupby("AC_Name")[fp_focus_metric].sum().sort_values(ascending=False).head(15)
-                fig = px.bar(x=ac_focus.values, y=ac_focus.index, orientation="h",
-                             title=f"Top 15 ACs by {fp_focus_label}",
-                             labels={"x": fp_focus_label, "y": ""})
-                fig.update_traces(marker_color=BRAND_PRIMARY)
-                fig.update_yaxes(autorange="reversed")
-                st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
+            if SHOW_CHARTS:
+                section_title("Visual Analysis")
+                v1, v2 = st.columns(2)
+                with v1:
+                    if len(status_sums):
+                        fig = px.pie(names=status_labels, values=status_sums.values, hole=0.5,
+                                     title="Current Status Mix (all forms sum to exactly one stage each)")
+                        fig.update_traces(textinfo="percent+label", textposition="inside")
+                        st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
+                with v2:
+                    ftype_sums = filtered.groupby("Form_Type_Label")["Total_Received"].sum().sort_values(ascending=False)
+                    fig = px.bar(x=ftype_sums.values, y=ftype_sums.index, orientation="h",
+                                 title="Total Forms Received by Form Type",
+                                 labels={"x": "Forms Received", "y": ""})
+                    fig.update_traces(marker_color=BRAND_PRIMARY)
+                    st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
+
+                v3, v4 = st.columns(2)
+                with v3:
+                    dist_cmp = filtered.groupby("District")[["Unprocessed", "In_Progress", "Finalized"]].sum()
+                    dist_cmp = dist_cmp.loc[dist_cmp.sum(axis=1).sort_values(ascending=False).index]
+                    fig = go.Figure()
+                    for col, color in zip(["Unprocessed", "In_Progress", "Finalized"],
+                                           [BRAND_DANGER, BRAND_WARN, BRAND_ACCENT]):
+                        fig.add_bar(name=col.replace("_", " "), x=dist_cmp.index, y=dist_cmp[col], marker_color=color)
+                    fig.update_layout(barmode="stack", title="District-wise Processing Status (stacked)")
+                    st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
+                with v4:
+                    ac_focus = filtered.groupby("AC_Name")[fp_focus_metric].sum().sort_values(ascending=False).head(15)
+                    fig = px.bar(x=ac_focus.values, y=ac_focus.index, orientation="h",
+                                 title=f"Top 15 ACs by {fp_focus_label}",
+                                 labels={"x": fp_focus_label, "y": ""})
+                    fig.update_traces(marker_color=BRAND_PRIMARY)
+                    fig.update_yaxes(autorange="reversed")
+                    st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
 
             # ------------------ District-wise report ------------------
             section_title("District-wise Report")
@@ -873,10 +884,11 @@ with tab1:
                     "Disposal_Rate_%": "{:.1f}%", "Inclusion_Rate_%": "{:.1f}%", "Backlog_Rate_%": "{:.1f}%",
                 }), use_container_width=True, height=380)
 
-            fig = px.bar(fp_dist_view, x="District", y=["Total_Received", "Finalized"],
-                         barmode="group", title="District Comparison: Received vs Finalized",
-                         color_discrete_sequence=CHART_COLORWAY, labels={"value": "Forms", "variable": ""})
-            st.plotly_chart(apply_plotly_theme(fig, height=360), use_container_width=True)
+            if SHOW_CHARTS:
+                fig = px.bar(fp_dist_view, x="District", y=["Total_Received", "Finalized"],
+                             barmode="group", title="District Comparison: Received vs Finalized",
+                             color_discrete_sequence=CHART_COLORWAY, labels={"value": "Forms", "variable": ""})
+                st.plotly_chart(apply_plotly_theme(fig, height=360), use_container_width=True)
 
             # ------------------ AC-wise report ------------------
             section_title("AC-wise Report")
@@ -895,12 +907,13 @@ with tab1:
                     "Disposal_Rate_%": "{:.1f}%", "Inclusion_Rate_%": "{:.1f}%",
                 }), use_container_width=True, height=380)
 
-            ac_chart_df = fp_ac_rep.sort_values("Total_Received", ascending=False).head(20)
-            fig = px.bar(ac_chart_df, x="AC_Name", y=["Unprocessed", "In_Progress", "Finalized"],
-                         barmode="stack", title=f"AC Comparison ({ac_dist_pick}) - Top 20 by Volume",
-                         color_discrete_sequence=CHART_COLORWAY, labels={"value": "Forms", "variable": ""})
-            fig.update_xaxes(tickangle=-40)
-            st.plotly_chart(apply_plotly_theme(fig, height=380), use_container_width=True)
+            if SHOW_CHARTS:
+                ac_chart_df = fp_ac_rep.sort_values("Total_Received", ascending=False).head(20)
+                fig = px.bar(ac_chart_df, x="AC_Name", y=["Unprocessed", "In_Progress", "Finalized"],
+                             barmode="stack", title=f"AC Comparison ({ac_dist_pick}) - Top 20 by Volume",
+                             color_discrete_sequence=CHART_COLORWAY, labels={"value": "Forms", "variable": ""})
+                fig.update_xaxes(tickangle=-40)
+                st.plotly_chart(apply_plotly_theme(fig, height=380), use_container_width=True)
 
             # ------------------ Downloads ------------------
             section_title("Downloads")
@@ -1025,43 +1038,44 @@ with tab2:
             kpi_card(c7, "Found Ineligible for Final", fmt_int(ineligible),
                      f"{fmt_pct(safe_div(ineligible, notice_gen))} of notices generated", color=BRAND_WARN)
 
-            section_title("Visual Analysis")
-            v1, v2 = st.columns(2)
-            with v1:
-                fig = px.pie(names=["Delivered", "Pending Delivery"],
-                             values=[notice_del, notice_pend_del], hole=0.5,
-                             title="Notice Delivery Split", color_discrete_sequence=[BRAND_ACCENT, BRAND_WARN])
-                st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
-            with v2:
-                pend_df = nh_filtered.groupby("District")[["DEO_Total_Pending", "DEO_Pending_GT5"]].sum()
-                pend_df = pend_df.loc[pend_df["DEO_Total_Pending"].sort_values(ascending=False).index]
-                fig = go.Figure()
-                fig.add_bar(name="Total Pending", x=pend_df.index, y=pend_df["DEO_Total_Pending"], marker_color=BRAND_WARN)
-                fig.add_bar(name="Pending > 5 Days", x=pend_df.index, y=pend_df["DEO_Pending_GT5"], marker_color=BRAND_DANGER)
-                fig.update_layout(barmode="overlay", title="DEO Pendency by District (overdue vs total)")
-                st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
+            if SHOW_CHARTS:
+                section_title("Visual Analysis")
+                v1, v2 = st.columns(2)
+                with v1:
+                    fig = px.pie(names=["Delivered", "Pending Delivery"],
+                                 values=[notice_del, notice_pend_del], hole=0.5,
+                                 title="Notice Delivery Split", color_discrete_sequence=[BRAND_ACCENT, BRAND_WARN])
+                    st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
+                with v2:
+                    pend_df = nh_filtered.groupby("District")[["DEO_Total_Pending", "DEO_Pending_GT5"]].sum()
+                    pend_df = pend_df.loc[pend_df["DEO_Total_Pending"].sort_values(ascending=False).index]
+                    fig = go.Figure()
+                    fig.add_bar(name="Total Pending", x=pend_df.index, y=pend_df["DEO_Total_Pending"], marker_color=BRAND_WARN)
+                    fig.add_bar(name="Pending > 5 Days", x=pend_df.index, y=pend_df["DEO_Pending_GT5"], marker_color=BRAND_DANGER)
+                    fig.update_layout(barmode="overlay", title="DEO Pendency by District (overdue vs total)")
+                    st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
 
-            v3, v4 = st.columns(2)
-            with v3:
-                cmp = nh_filtered.groupby("District")[["Notice_Generated", "Notice_Delivered", "Hearings_Held"]].sum()
-                cmp = cmp.loc[cmp["Notice_Generated"].sort_values(ascending=False).index]
-                fig = px.bar(cmp, x=cmp.index, y=["Notice_Generated", "Notice_Delivered", "Hearings_Held"],
-                             barmode="group", title="District Comparison: Generated / Delivered / Hearings Held",
-                             color_discrete_sequence=CHART_COLORWAY, labels={"value": "Count", "variable": ""})
-                st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
-            with v4:
-                # Delivery rate is uniformly high (~97-100%) across ACs in this
-                # data, so ranking by rate barely differentiates ACs. The
-                # absolute "Pending Delivery" count is the actionable view for
-                # an officer -- it shows exactly where the undelivered notices
-                # are concentrated.
-                ac_pend = nh_filtered.groupby("AC_Name")["Notice_Pending_Delivery"].sum().sort_values(ascending=False).head(15)
-                fig = px.bar(x=ac_pend.values, y=ac_pend.index, orientation="h",
-                             title="Top 15 ACs by Notice Pending Delivery (count)",
-                             labels={"x": "Notices Pending Delivery", "y": ""})
-                fig.update_traces(marker_color=BRAND_DANGER)
-                fig.update_yaxes(autorange="reversed")
-                st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
+                v3, v4 = st.columns(2)
+                with v3:
+                    cmp = nh_filtered.groupby("District")[["Notice_Generated", "Notice_Delivered", "Hearings_Held"]].sum()
+                    cmp = cmp.loc[cmp["Notice_Generated"].sort_values(ascending=False).index]
+                    fig = px.bar(cmp, x=cmp.index, y=["Notice_Generated", "Notice_Delivered", "Hearings_Held"],
+                                 barmode="group", title="District Comparison: Generated / Delivered / Hearings Held",
+                                 color_discrete_sequence=CHART_COLORWAY, labels={"value": "Count", "variable": ""})
+                    st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
+                with v4:
+                    # Delivery rate is uniformly high (~97-100%) across ACs in this
+                    # data, so ranking by rate barely differentiates ACs. The
+                    # absolute "Pending Delivery" count is the actionable view for
+                    # an officer -- it shows exactly where the undelivered notices
+                    # are concentrated.
+                    ac_pend = nh_filtered.groupby("AC_Name")["Notice_Pending_Delivery"].sum().sort_values(ascending=False).head(15)
+                    fig = px.bar(x=ac_pend.values, y=ac_pend.index, orientation="h",
+                                 title="Top 15 ACs by Notice Pending Delivery (count)",
+                                 labels={"x": "Notices Pending Delivery", "y": ""})
+                    fig.update_traces(marker_color=BRAND_DANGER)
+                    fig.update_yaxes(autorange="reversed")
+                    st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
 
             # ------------------ District-wise report ------------------
             section_title("District-wise Report")
@@ -1080,10 +1094,11 @@ with tab2:
                     "Ineligible_Final": "{:,.0f}",
                 }), use_container_width=True, height=380)
 
-            fig = px.bar(nh_dist_view, x="District", y=["Notice_Generated", "Notice_Delivered"],
-                         barmode="group", title="District Comparison: Notices Generated vs Delivered",
-                         color_discrete_sequence=CHART_COLORWAY, labels={"value": "Notices", "variable": ""})
-            st.plotly_chart(apply_plotly_theme(fig, height=360), use_container_width=True)
+            if SHOW_CHARTS:
+                fig = px.bar(nh_dist_view, x="District", y=["Notice_Generated", "Notice_Delivered"],
+                             barmode="group", title="District Comparison: Notices Generated vs Delivered",
+                             color_discrete_sequence=CHART_COLORWAY, labels={"value": "Notices", "variable": ""})
+                st.plotly_chart(apply_plotly_theme(fig, height=360), use_container_width=True)
 
             # ------------------ AC-wise report ------------------
             section_title("AC-wise Report")
@@ -1102,12 +1117,13 @@ with tab2:
                     "DEO_Total_Pending": "{:,.0f}", "DEO_Pending_GT5": "{:,.0f}",
                 }), use_container_width=True, height=380)
 
-            ac_chart_df2 = nh_ac_rep.sort_values("Notice_Generated", ascending=False).head(20)
-            fig = px.bar(ac_chart_df2, x="AC_Name", y=["Notice_Delivered", "Notice_Pending_Delivery"],
-                         barmode="stack", title=f"AC Comparison ({nh_ac_dist_pick}) - Top 20 by Notices Generated",
-                         color_discrete_sequence=CHART_COLORWAY, labels={"value": "Notices", "variable": ""})
-            fig.update_xaxes(tickangle=-40)
-            st.plotly_chart(apply_plotly_theme(fig, height=380), use_container_width=True)
+            if SHOW_CHARTS:
+                ac_chart_df2 = nh_ac_rep.sort_values("Notice_Generated", ascending=False).head(20)
+                fig = px.bar(ac_chart_df2, x="AC_Name", y=["Notice_Delivered", "Notice_Pending_Delivery"],
+                             barmode="stack", title=f"AC Comparison ({nh_ac_dist_pick}) - Top 20 by Notices Generated",
+                             color_discrete_sequence=CHART_COLORWAY, labels={"value": "Notices", "variable": ""})
+                fig.update_xaxes(tickangle=-40)
+                st.plotly_chart(apply_plotly_theme(fig, height=380), use_container_width=True)
 
             # ------------------ Downloads ------------------
             section_title("Downloads")
