@@ -1,0 +1,15 @@
+[theme]
+# Force a light theme regardless of the viewer's system/browser dark-mode
+# setting. The dashboard's custom CSS (in app.py) is designed for a light
+# background with dark text; without this, a viewer whose OS/browser is in
+# dark mode gets a jarring mix of Streamlit's dark chrome and the
+# dashboard's light cards, which is hard to read.
+base = "light"
+primaryColor = "#0B3D91"
+backgroundColor = "#F4F6FA"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#1B2430"
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
