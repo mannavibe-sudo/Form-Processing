@@ -115,6 +115,27 @@ CHART_COLORWAY = ["#0B3D91", "#1F8A70", "#D97706", "#C0392B", "#6C5CE7",
 # this back to True whenever charts are wanted again -- no other change needed.
 SHOW_CHARTS = False
 
+# --------------------------------------------------------------------------
+# On-screen report tables: trimmed to the columns that matter for day-to-day
+# monitoring (glanceable on a phone). Column NAMES are kept exactly as they
+# are elsewhere in the app -- nothing is renamed. The fuller column sets
+# (*_display_cols, defined next to each report below) are still used for the
+# Excel/PDF exports, so no data is lost -- only the on-screen table is leaner.
+# --------------------------------------------------------------------------
+FP_DIST_SCREEN_COLS = ["District", "Total_Received", "Unprocessed", "Finalized",
+                        "Eroll_Inclusion", "Disposal_Rate_%", "Backlog_Rate_%"]
+FP_AC_SCREEN_COLS = ["District", "AC_Name", "Total_Received", "Unprocessed",
+                      "Finalized", "Eroll_Inclusion", "Disposal_Rate_%"]
+NH_DIST_SCREEN_COLS = ["District", "Notice_Generated", "Notice_Delivered",
+                        "Delivery_Rate_%", "DEO_Total_Pending", "DEO_Pending_GT5"]
+NH_AC_SCREEN_COLS = ["District", "AC_Name", "Notice_Generated", "Notice_Delivered",
+                      "DEO_Total_Pending", "DEO_Pending_GT5"]
+
+# Rate/percent columns get a colour-coded pill in the on-screen tables so an
+# officer can spot problem districts/ACs at a glance without reading numbers.
+RATE_COLS_HIGHER_BETTER = {"Disposal_Rate_%", "Inclusion_Rate_%", "Delivery_Rate_%", "Hearing_Rate_%"}
+RATE_COLS_LOWER_BETTER = {"Backlog_Rate_%", "Pending_GT5_%"}
+
 FORM_TYPE_LABELS = {
     "FORM6": "Form 6 (New Registration)",
     "FORM6A": "Form 6A (NRI Elector)",
@@ -411,14 +432,39 @@ def nh_ac_report(df: pd.DataFrame) -> pd.DataFrame:
 def inject_css():
     st.markdown(f"""
     <style>
-        .stApp {{ background-color: {BRAND_BG}; }}
+        /* Force light native form controls (dropdowns, checkboxes) even when
+           the viewer's OS/browser is set to dark mode -- a defense-in-depth
+           layer independent of .streamlit/config.toml, whose theme block
+           only takes effect from the exact path ".streamlit/config.toml". */
+        html, body, .stApp, [data-testid="stAppViewContainer"], [data-testid="stHeader"] {{
+            color-scheme: light !important;
+        }}
+
+        .stApp {{
+            background: linear-gradient(165deg, #EAF1FC 0%, #F5F8FD 45%, #EDF2FA 100%) !important;
+        }}
+        [data-testid="stHeader"] {{ background: rgba(0,0,0,0) !important; }}
         #MainMenu, footer {{ visibility: hidden; }}
         .block-container {{ padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1400px; }}
 
+        /* Streamlit's own chrome (labels, widget text) forced to our light
+           palette regardless of viewer theme. */
+        section[data-testid="stSidebar"] {{
+            background: rgba(255,255,255,0.72) !important;
+            backdrop-filter: blur(14px) saturate(160%);
+            -webkit-backdrop-filter: blur(14px) saturate(160%);
+            border-right: 1px solid rgba(255,255,255,0.6);
+        }}
+        section[data-testid="stSidebar"] * {{ color: {BRAND_TEXT} !important; }}
+        [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li,
+        [data-testid="stMarkdownContainer"] span, label, .stSelectbox label,
+        .stMultiSelect label, .stCheckbox label p {{ color: {BRAND_TEXT} !important; }}
+
         .mis-header {{
             background: linear-gradient(120deg, {BRAND_PRIMARY} 0%, {BRAND_PRIMARY_DARK} 100%);
-            color: white; padding: 1.4rem 1.8rem; border-radius: 14px;
-            margin-bottom: 1.2rem; box-shadow: 0 4px 18px rgba(11,61,145,0.25);
+            color: white; padding: 1.4rem 1.8rem; border-radius: 16px;
+            margin-bottom: 1.2rem; box-shadow: 0 8px 26px rgba(11,61,145,0.28);
+            border: 1px solid rgba(255,255,255,0.18);
         }}
         .mis-header h1 {{ margin: 0; font-size: 1.55rem; font-weight: 700; letter-spacing: 0.2px; }}
         .mis-header p {{ margin: 0.3rem 0 0 0; opacity: 0.9; font-size: 0.92rem; }}
@@ -428,11 +474,17 @@ def inject_css():
             margin-top: 0.55rem; margin-right: 0.4rem; border: 1px solid rgba(255,255,255,0.25);
         }}
 
+        /* Glassmorphism: translucent, blurred, soft-bordered cards */
         .kpi-card {{
-            background: {BRAND_CARD}; border-radius: 12px; padding: 1rem 1.1rem;
-            border: 1px solid #E4E8F0; box-shadow: 0 2px 8px rgba(20,30,60,0.05);
-            height: 100%;
+            background: rgba(255,255,255,0.55);
+            backdrop-filter: blur(12px) saturate(160%);
+            -webkit-backdrop-filter: blur(12px) saturate(160%);
+            border-radius: 16px; padding: 1rem 1.1rem;
+            border: 1px solid rgba(255,255,255,0.65);
+            box-shadow: 0 8px 22px rgba(20,30,60,0.08);
+            height: 100%; transition: transform .15s ease, box-shadow .15s ease;
         }}
+        .kpi-card:hover {{ transform: translateY(-2px); box-shadow: 0 12px 28px rgba(20,30,60,0.13); }}
         .kpi-label {{ color: {BRAND_MUTED}; font-size: 0.78rem; font-weight: 600;
                       text-transform: uppercase; letter-spacing: 0.4px; margin-bottom: 0.35rem; }}
         .kpi-value {{ color: {BRAND_TEXT}; font-size: 1.65rem; font-weight: 800; line-height: 1.1; }}
@@ -444,13 +496,64 @@ def inject_css():
             border-bottom: 2px solid {BRAND_PRIMARY};
         }}
         .note-box {{
-            background: #EEF3FC; border-left: 4px solid {BRAND_PRIMARY};
-            padding: 0.7rem 1rem; border-radius: 6px; font-size: 0.85rem;
+            background: rgba(238,243,252,0.75); backdrop-filter: blur(6px);
+            border-left: 4px solid {BRAND_PRIMARY};
+            padding: 0.7rem 1rem; border-radius: 8px; font-size: 0.85rem;
             color: {BRAND_TEXT}; margin-bottom: 0.8rem;
         }}
-        div[data-testid="stDataFrame"] {{ border-radius: 10px; overflow: hidden;
-            border: 1px solid #E4E8F0; }}
-        section[data-testid="stSidebar"] {{ background-color: #FFFFFF; border-right: 1px solid #E4E8F0; }}
+        .table-caption {{
+            font-size: 0.78rem; color: {BRAND_MUTED}; margin: -0.3rem 0 0.6rem 0;
+        }}
+
+        /* Custom glassy, theme-independent report tables (replaces the
+           canvas-rendered st.dataframe grid, which cannot be styled with CSS
+           and otherwise follows the viewer's dark/light mode regardless of
+           our design). Horizontally scrollable so it stays usable on phones. */
+        .glass-table-wrap {{
+            overflow-x: auto; overflow-y: auto; max-height: 460px;
+            border-radius: 14px; border: 1px solid rgba(255,255,255,0.65);
+            background: rgba(255,255,255,0.55);
+            backdrop-filter: blur(12px) saturate(160%);
+            -webkit-backdrop-filter: blur(12px) saturate(160%);
+            box-shadow: 0 8px 22px rgba(20,30,60,0.07);
+            margin-bottom: 0.9rem;
+        }}
+        .glass-table {{ width: 100%; border-collapse: collapse; font-size: 0.86rem; min-width: 480px; }}
+        .glass-table thead th {{
+            position: sticky; top: 0; z-index: 2;
+            background: {BRAND_PRIMARY}; color: #ffffff !important; text-align: left;
+            padding: 0.6rem 0.85rem; font-weight: 600; font-size: 0.74rem;
+            text-transform: uppercase; letter-spacing: 0.3px; white-space: nowrap;
+        }}
+        .glass-table tbody td {{
+            padding: 0.55rem 0.85rem; border-bottom: 1px solid rgba(20,30,60,0.07);
+            color: {BRAND_TEXT} !important; white-space: nowrap;
+        }}
+        .glass-table tbody tr:nth-child(even) {{ background: rgba(11,61,145,0.035); }}
+        .glass-table tbody tr:hover {{ background: rgba(11,61,145,0.09); }}
+        .rate-badge {{
+            display: inline-block; padding: 0.15rem 0.6rem; border-radius: 999px;
+            font-weight: 700; font-size: 0.78rem;
+        }}
+        .badge-good {{ background: rgba(31,138,112,0.16); color: #17715A; }}
+        .badge-mid  {{ background: rgba(217,119,6,0.16); color: #A35004; }}
+        .badge-bad  {{ background: rgba(192,57,43,0.16); color: #A5312A; }}
+
+        /* Mobile: tighten padding and shrink type so cards/tables/header fit
+           comfortably on a phone screen without horizontal overflow of the
+           page itself (tables still scroll sideways inside their own box). */
+        @media (max-width: 640px) {{
+            .block-container {{ padding-left: 0.7rem; padding-right: 0.7rem; padding-top: 0.8rem; }}
+            .mis-header {{ padding: 1rem 1.1rem; border-radius: 12px; }}
+            .mis-header h1 {{ font-size: 1.15rem; }}
+            .mis-header p {{ font-size: 0.82rem; }}
+            .kpi-card {{ padding: 0.8rem 0.9rem; border-radius: 12px; }}
+            .kpi-value {{ font-size: 1.28rem; }}
+            .kpi-label {{ font-size: 0.68rem; }}
+            .section-title {{ font-size: 0.95rem; margin: 1.1rem 0 0.5rem 0; }}
+            .glass-table {{ font-size: 0.78rem; }}
+            .glass-table thead th, .glass-table tbody td {{ padding: 0.45rem 0.6rem; }}
+        }}
     </style>
     """, unsafe_allow_html=True)
 
@@ -488,6 +591,75 @@ def apply_plotly_theme(fig, height=380):
     fig.update_xaxes(gridcolor="#EAEDF3")
     fig.update_yaxes(gridcolor="#EAEDF3")
     return fig
+
+
+def _rate_badge_class(col: str, val) -> str:
+    """Colour-code a rate/percent value for the on-screen tables so an
+    officer can spot problem districts/ACs at a glance."""
+    try:
+        v = float(val)
+    except (TypeError, ValueError):
+        return ""
+    if col in RATE_COLS_HIGHER_BETTER:
+        if v >= 75:
+            return "badge-good"
+        if v >= 50:
+            return "badge-mid"
+        return "badge-bad"
+    if col in RATE_COLS_LOWER_BETTER:
+        if v <= 10:
+            return "badge-good"
+        if v <= 25:
+            return "badge-mid"
+        return "badge-bad"
+    return ""
+
+
+def render_html_table(df: pd.DataFrame, cols: list, formats: dict = None, caption: str = None):
+    """Render a dataframe as a custom, theme-independent HTML table.
+
+    Streamlit's st.dataframe() renders through a canvas-based grid component
+    that ignores custom CSS and always follows the app's active theme -- that
+    is the actual root cause of tables turning unreadable in dark mode no
+    matter what CSS is added elsewhere. A plain HTML <table> rendered via
+    st.markdown(unsafe_allow_html=True) is fully CSS-controllable and
+    completely independent of the viewer's theme, and is wrapped here in a
+    horizontally-scrollable "glass" container so it stays usable on a phone.
+    """
+    formats = formats or {}
+    view = df[cols].copy()
+    numeric_cols = set(view.select_dtypes(include="number").columns)
+
+    thead = "".join(f"<th>{c.replace('_', ' ')}</th>" for c in cols)
+
+    body_rows = []
+    for _, row in view.iterrows():
+        cells = []
+        for c in cols:
+            val = row[c]
+            if c in formats:
+                try:
+                    disp = formats[c].format(val)
+                except (TypeError, ValueError):
+                    disp = "" if pd.isna(val) else str(val)
+            else:
+                disp = "" if pd.isna(val) else str(val)
+            align = "right" if c in numeric_cols else "left"
+            badge = _rate_badge_class(c, val) if c in numeric_cols else ""
+            if badge:
+                cells.append(f'<td style="text-align:{align}"><span class="rate-badge {badge}">{disp}</span></td>')
+            else:
+                cells.append(f'<td style="text-align:{align}">{disp}</td>')
+        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+
+    table_html = (
+        '<div class="glass-table-wrap"><table class="glass-table">'
+        f"<thead><tr>{thead}</tr></thead><tbody>{''.join(body_rows)}</tbody>"
+        "</table></div>"
+    )
+    st.markdown(table_html, unsafe_allow_html=True)
+    if caption:
+        st.markdown(f'<div class="table-caption">{caption}</div>', unsafe_allow_html=True)
 
 
 # --------------------------------------------------------------------------
@@ -877,12 +1049,15 @@ with tab1:
             sort_opt = st.selectbox("Sort district report by", fp_dist_display_cols[1:],
                                      index=fp_dist_display_cols.index("Total_Received") - 1, key="fp_dist_sort")
             fp_dist_view = fp_dist_rep[fp_dist_display_cols].sort_values(sort_opt, ascending=False)
-            st.dataframe(
-                fp_dist_view.style.format({
-                    "Total_Received": "{:,.0f}", "Unprocessed": "{:,.0f}", "In_Progress": "{:,.0f}",
-                    "Finalized": "{:,.0f}", "Eroll_Inclusion": "{:,.0f}", "Rejected": "{:,.0f}",
-                    "Disposal_Rate_%": "{:.1f}%", "Inclusion_Rate_%": "{:.1f}%", "Backlog_Rate_%": "{:.1f}%",
-                }), use_container_width=True, height=380)
+            render_html_table(
+                fp_dist_view, FP_DIST_SCREEN_COLS,
+                formats={
+                    "Total_Received": "{:,.0f}", "Unprocessed": "{:,.0f}",
+                    "Finalized": "{:,.0f}", "Eroll_Inclusion": "{:,.0f}",
+                    "Disposal_Rate_%": "{:.1f}%", "Backlog_Rate_%": "{:.1f}%",
+                },
+                caption="Showing key monitoring columns. Full column set is included in the Excel/PDF export below.",
+            )
 
             if SHOW_CHARTS:
                 fig = px.bar(fp_dist_view, x="District", y=["Total_Received", "Finalized"],
@@ -900,12 +1075,15 @@ with tab1:
             fp_ac_display_cols = ["District", "AC_No", "AC_Name", "Total_Received", "Unprocessed",
                                    "In_Progress", "Finalized", "Eroll_Inclusion", "Rejected",
                                    "Disposal_Rate_%", "Inclusion_Rate_%"]
-            st.dataframe(
-                fp_ac_rep[fp_ac_display_cols].style.format({
-                    "Total_Received": "{:,.0f}", "Unprocessed": "{:,.0f}", "In_Progress": "{:,.0f}",
-                    "Finalized": "{:,.0f}", "Eroll_Inclusion": "{:,.0f}", "Rejected": "{:,.0f}",
-                    "Disposal_Rate_%": "{:.1f}%", "Inclusion_Rate_%": "{:.1f}%",
-                }), use_container_width=True, height=380)
+            render_html_table(
+                fp_ac_rep, FP_AC_SCREEN_COLS,
+                formats={
+                    "Total_Received": "{:,.0f}", "Unprocessed": "{:,.0f}",
+                    "Finalized": "{:,.0f}", "Eroll_Inclusion": "{:,.0f}",
+                    "Disposal_Rate_%": "{:.1f}%",
+                },
+                caption="Showing key monitoring columns. Full column set is included in the Excel/PDF export below.",
+            )
 
             if SHOW_CHARTS:
                 ac_chart_df = fp_ac_rep.sort_values("Total_Received", ascending=False).head(20)
@@ -1086,13 +1264,15 @@ with tab2:
             nh_sort_opt = st.selectbox("Sort district report by", nh_dist_display_cols[1:],
                                         index=nh_dist_display_cols.index("Notice_Generated") - 1, key="nh_dist_sort")
             nh_dist_view = nh_dist_rep[nh_dist_display_cols].sort_values(nh_sort_opt, ascending=False)
-            st.dataframe(
-                nh_dist_view.style.format({
-                    "Parts": "{:,.0f}", "Notice_Generated": "{:,.0f}", "Notice_Delivered": "{:,.0f}",
-                    "Delivery_Rate_%": "{:.1f}%", "Hearings_Held": "{:,.0f}", "Hearing_Rate_%": "{:.1f}%",
-                    "DEO_Total_Pending": "{:,.0f}", "DEO_Pending_GT5": "{:,.0f}", "Pending_GT5_%": "{:.1f}%",
-                    "Ineligible_Final": "{:,.0f}",
-                }), use_container_width=True, height=380)
+            render_html_table(
+                nh_dist_view, NH_DIST_SCREEN_COLS,
+                formats={
+                    "Notice_Generated": "{:,.0f}", "Notice_Delivered": "{:,.0f}",
+                    "Delivery_Rate_%": "{:.1f}%",
+                    "DEO_Total_Pending": "{:,.0f}", "DEO_Pending_GT5": "{:,.0f}",
+                },
+                caption="Showing key monitoring columns. Full column set is included in the Excel/PDF export below.",
+            )
 
             if SHOW_CHARTS:
                 fig = px.bar(nh_dist_view, x="District", y=["Notice_Generated", "Notice_Delivered"],
@@ -1110,12 +1290,14 @@ with tab2:
             nh_ac_display_cols = ["District", "AC_No", "AC_Name", "Parts", "Notice_Generated", "Notice_Delivered",
                                    "Delivery_Rate_%", "Hearings_Held", "Hearing_Rate_%", "DEO_Total_Pending",
                                    "DEO_Pending_GT5"]
-            st.dataframe(
-                nh_ac_rep[nh_ac_display_cols].style.format({
-                    "Parts": "{:,.0f}", "Notice_Generated": "{:,.0f}", "Notice_Delivered": "{:,.0f}",
-                    "Delivery_Rate_%": "{:.1f}%", "Hearings_Held": "{:,.0f}", "Hearing_Rate_%": "{:.1f}%",
+            render_html_table(
+                nh_ac_rep, NH_AC_SCREEN_COLS,
+                formats={
+                    "Notice_Generated": "{:,.0f}", "Notice_Delivered": "{:,.0f}",
                     "DEO_Total_Pending": "{:,.0f}", "DEO_Pending_GT5": "{:,.0f}",
-                }), use_container_width=True, height=380)
+                },
+                caption="Showing key monitoring columns. Full column set is included in the Excel/PDF export below.",
+            )
 
             if SHOW_CHARTS:
                 ac_chart_df2 = nh_ac_rep.sort_values("Notice_Generated", ascending=False).head(20)
