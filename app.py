@@ -132,8 +132,8 @@ NH_AC_SCREEN_COLS = ["District", "AC_Name", "Notice_Generated", "Notice_Delivere
 
 # Rate/percent columns get a colour-coded pill in the on-screen tables so an
 # officer can spot problem districts/ACs at a glance without reading numbers.
-RATE_COLS_HIGHER_BETTER = {"Disposal_Rate_%", "Inclusion_Rate_%", "Delivery_Rate_%", "Hearing_Rate_%"}
-RATE_COLS_LOWER_BETTER = {"Backlog_Rate_%", "Pending_GT5_%"}
+RATE_COLS_HIGHER_BETTER = {"Inclusion_Rate_%", "Delivery_Rate_%", "Hearing_Rate_%"}
+RATE_COLS_LOWER_BETTER = {"Pending_GT5_%"}
 
 FORM_TYPE_LABELS = {
     "FORM6": "Form 6 (New Registration)",
@@ -176,9 +176,16 @@ FP_INPROGRESS_COLS = [c for c in FP_STATUS_COLS
 # On-screen Form Processing report tables: default to literal, recognisable
 # columns straight from Form_Processing.xlsx (identifiers + Total Form
 # Received + a handful of the raw status columns) -- nothing invented. Every
-# other raw status column, plus the derived Finalized / In Progress / rate
+# other raw status column, plus the derived In Progress / Inclusion Rate
 # metrics, is available as an optional "add columns" picker so nothing from
 # the sheet is hidden -- it's just not cluttering the default view.
+#
+# NOTE: "Finalized", "Disposal Rate %" and "Backlog Rate %" were removed
+# entirely (not just hidden) at the user's request -- they were computed
+# summaries (Finalized = Accepted+Rejected+Eroll Inclusion; the two rates
+# were built from that and from Unprocessed) with no equivalent field in
+# either source workbook, and caused confusion. Unprocessed, Accepted,
+# Rejected and Eroll Inclusion are still shown -- those ARE real columns.
 # --------------------------------------------------------------------------
 FP_DIST_BASE_COLS = ["District", "Total_Received", "Hearing_Scheduled",
                       "Rejected", "Accepted", "Eroll_Inclusion"]
@@ -186,18 +193,17 @@ FP_AC_BASE_COLS = ["District", "AC_No", "AC_Name", "Total_Received",
                     "Hearing_Scheduled", "Rejected", "Accepted", "Eroll_Inclusion"]
 FP_DIST_EXTRA_COLS = (["ACs_Reporting"]
                        + [c for c in FP_STATUS_COLS if c not in FP_DIST_BASE_COLS]
-                       + ["Finalized", "In_Progress", "Disposal_Rate_%",
-                          "Inclusion_Rate_%", "Backlog_Rate_%"])
+                       + ["In_Progress", "Inclusion_Rate_%"])
 FP_AC_EXTRA_COLS = ([c for c in FP_STATUS_COLS if c not in FP_AC_BASE_COLS]
-                     + ["Finalized", "In_Progress", "Disposal_Rate_%", "Inclusion_Rate_%"])
+                     + ["In_Progress", "Inclusion_Rate_%"])
 
 # Format spec covering every possible Form Processing report column (base +
 # extra), used regardless of which optional columns the user adds on screen.
 FP_COL_FORMATS = {c: "{:,.0f}" for c in FP_STATUS_COLS}
 FP_COL_FORMATS.update({
-    "Total_Received": "{:,.0f}", "Finalized": "{:,.0f}", "In_Progress": "{:,.0f}",
+    "Total_Received": "{:,.0f}", "In_Progress": "{:,.0f}",
     "ACs_Reporting": "{:,.0f}",
-    "Disposal_Rate_%": "{:.1f}%", "Inclusion_Rate_%": "{:.1f}%", "Backlog_Rate_%": "{:.1f}%",
+    "Inclusion_Rate_%": "{:.1f}%",
 })
 
 
@@ -359,15 +365,14 @@ def load_form_processing(path: str, ac_district_map: dict):
     df["Form_Type_Label"] = df["Form Type"].map(FORM_TYPE_LABELS).fillna(df["Form Type"])
 
     # Rename identifier + all 18 status columns to clean underscore names
-    # BEFORE deriving Finalized/In_Progress, so every downstream reference
-    # (module-level FP_STATUS_COLS / FP_FINAL_COLS / FP_INPROGRESS_COLS) is
-    # consistent with the dataframe's actual column names.
+    # BEFORE deriving In_Progress, so every downstream reference (module-level
+    # FP_STATUS_COLS / FP_FINAL_COLS / FP_INPROGRESS_COLS) is consistent with
+    # the dataframe's actual column names.
     rename_map = {"AC No.": "AC_No", "AC Name": "AC_Name", "Form Type": "Form_Type",
                   "Total Form Received": "Total_Received"}
     rename_map.update(FP_RAW_TO_CLEAN)
     df = df.rename(columns=rename_map)
 
-    df["Finalized"] = df[FP_FINAL_COLS].sum(axis=1)
     df["In_Progress"] = df[FP_INPROGRESS_COLS].sum(axis=1)
 
     meta = {"report_period": report_period, "scope": scope_line}
@@ -383,11 +388,8 @@ def fp_district_report(df: pd.DataFrame) -> pd.DataFrame:
     agg_kwargs = {"ACs_Reporting": ("AC_No", "nunique"), "Total_Received": ("Total_Received", "sum")}
     agg_kwargs.update({c: (c, "sum") for c in FP_STATUS_COLS})
     g = df.groupby("District", as_index=False).agg(**agg_kwargs)
-    g["Finalized"] = g[FP_FINAL_COLS].sum(axis=1)
     g["In_Progress"] = g[FP_INPROGRESS_COLS].sum(axis=1)
-    g["Disposal_Rate_%"] = g.apply(lambda r: safe_div(r["Finalized"], r["Total_Received"]), axis=1)
     g["Inclusion_Rate_%"] = g.apply(lambda r: safe_div(r["Eroll_Inclusion"], r["Total_Received"]), axis=1)
-    g["Backlog_Rate_%"] = g.apply(lambda r: safe_div(r["Unprocessed"], r["Total_Received"]), axis=1)
     return g.sort_values("Total_Received", ascending=False)
 
 
@@ -397,9 +399,7 @@ def fp_ac_report(df: pd.DataFrame) -> pd.DataFrame:
     agg_kwargs = {"Total_Received": ("Total_Received", "sum")}
     agg_kwargs.update({c: (c, "sum") for c in FP_STATUS_COLS})
     g = df.groupby(["District", "AC_No", "AC_Name"], as_index=False).agg(**agg_kwargs)
-    g["Finalized"] = g[FP_FINAL_COLS].sum(axis=1)
     g["In_Progress"] = g[FP_INPROGRESS_COLS].sum(axis=1)
-    g["Disposal_Rate_%"] = g.apply(lambda r: safe_div(r["Finalized"], r["Total_Received"]), axis=1)
     g["Inclusion_Rate_%"] = g.apply(lambda r: safe_div(r["Eroll_Inclusion"], r["Total_Received"]), axis=1)
     # Group rows by District (districts ordered by their own total volume,
     # highest first -- matching the District-wise report above), and within
@@ -978,7 +978,7 @@ with tab1:
                 format_func=lambda x: FORM_TYPE_LABELS.get(x, x), default=[], key="fp_form")
             fp_metric_options = {
                 "Total Received": "Total_Received", "Unprocessed": "Unprocessed",
-                "In Progress": "In_Progress", "Finalized": "Finalized",
+                "In Progress": "In_Progress",
                 "Eroll Inclusion": "Eroll_Inclusion", "Rejected": "Rejected",
                 "Hearing Scheduled": "Hearing_Scheduled",
             }
@@ -1009,7 +1009,6 @@ with tab1:
             total_received = filtered["Total_Received"].sum()
             unprocessed = filtered["Unprocessed"].sum()
             in_progress = filtered["In_Progress"].sum()
-            finalized = filtered["Finalized"].sum()
             eroll_inclusion = filtered["Eroll_Inclusion"].sum()
             rejected = filtered["Rejected"].sum()
             accepted = filtered["Accepted"].sum()
@@ -1023,18 +1022,23 @@ with tab1:
                      f"{fmt_pct(safe_div(unprocessed, total_received))} of received", color=BRAND_DANGER)
             kpi_card(c3, "In Progress", fmt_int(in_progress),
                      f"{fmt_pct(safe_div(in_progress, total_received))} of received", color=BRAND_WARN)
-            kpi_card(c4, "Finalized", fmt_int(finalized),
-                     f"{fmt_pct(safe_div(finalized, total_received))} disposal rate", color=BRAND_ACCENT)
-
-            c5, c6, c7, c8 = st.columns(4)
-            kpi_card(c5, "Eroll Inclusion", fmt_int(eroll_inclusion),
+            kpi_card(c4, "Eroll Inclusion", fmt_int(eroll_inclusion),
                      f"{fmt_pct(safe_div(eroll_inclusion, total_received))} inclusion rate", color=BRAND_ACCENT)
-            kpi_card(c6, "Rejected", fmt_int(rejected),
+
+            c5, c6, c7 = st.columns(3)
+            kpi_card(c5, "Rejected", fmt_int(rejected),
                      f"{fmt_pct(safe_div(rejected, total_received))} rejection rate", color=BRAND_DANGER)
-            kpi_card(c7, "Accepted", fmt_int(accepted),
+            kpi_card(c6, "Accepted", fmt_int(accepted),
                      f"{fmt_pct(safe_div(accepted, total_received))} of received")
-            kpi_card(c8, "Hearing Scheduled", fmt_int(hearing_sched),
+            kpi_card(c7, "Hearing Scheduled", fmt_int(hearing_sched),
                      f"{fmt_pct(safe_div(hearing_sched, total_received))} of received", color=BRAND_WARN)
+
+            st.caption(
+                "ℹ️ **In Progress** is a calculated total, not a column in Form_Processing.xlsx -- "
+                "it's every status column except Unprocessed/Accepted/Rejected/Eroll Inclusion, added "
+                "together (forms still moving through the workflow). Every number that goes into it is "
+                "visible as its own column in the reports below, or via “Add more columns”."
+            )
 
             # status_sums/status_labels are needed by the PDF export below even
             # when the on-screen charts are switched off, so compute them here
@@ -1062,11 +1066,11 @@ with tab1:
 
                 v3, v4 = st.columns(2)
                 with v3:
-                    dist_cmp = filtered.groupby("District")[["Unprocessed", "In_Progress", "Finalized"]].sum()
+                    dist_cmp = filtered.groupby("District")[["Unprocessed", "In_Progress"]].sum()
                     dist_cmp = dist_cmp.loc[dist_cmp.sum(axis=1).sort_values(ascending=False).index]
                     fig = go.Figure()
-                    for col, color in zip(["Unprocessed", "In_Progress", "Finalized"],
-                                           [BRAND_DANGER, BRAND_WARN, BRAND_ACCENT]):
+                    for col, color in zip(["Unprocessed", "In_Progress"],
+                                           [BRAND_DANGER, BRAND_WARN]):
                         fig.add_bar(name=col.replace("_", " "), x=dist_cmp.index, y=dist_cmp[col], marker_color=color)
                     fig.update_layout(barmode="stack", title="District-wise Processing Status (stacked)")
                     st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
@@ -1094,13 +1098,13 @@ with tab1:
             render_html_table(
                 fp_dist_view, FP_DIST_BASE_COLS + fp_dist_extra_pick,
                 formats=FP_COL_FORMATS,
-                caption="Columns match Form_Processing.xlsx exactly (Finalized/In Progress/rates are optional, "
+                caption="Columns match Form_Processing.xlsx exactly (In Progress/Inclusion Rate are optional, "
                         "derived totals -- add them above). Full column set is also in the Excel/PDF export below.",
             )
 
             if SHOW_CHARTS:
-                fig = px.bar(fp_dist_view, x="District", y=["Total_Received", "Finalized"],
-                             barmode="group", title="District Comparison: Received vs Finalized",
+                fig = px.bar(fp_dist_view, x="District", y=["Total_Received", "Eroll_Inclusion"],
+                             barmode="group", title="District Comparison: Received vs Eroll Inclusion",
                              color_discrete_sequence=CHART_COLORWAY, labels={"value": "Forms", "variable": ""})
                 st.plotly_chart(apply_plotly_theme(fig, height=360), use_container_width=True)
 
@@ -1120,13 +1124,13 @@ with tab1:
             render_html_table(
                 fp_ac_rep, FP_AC_BASE_COLS + fp_ac_extra_pick,
                 formats=FP_COL_FORMATS,
-                caption="Columns match Form_Processing.xlsx exactly (Finalized/In Progress/rates are optional, "
+                caption="Columns match Form_Processing.xlsx exactly (In Progress/Inclusion Rate are optional, "
                         "derived totals -- add them above). Full column set is also in the Excel/PDF export below.",
             )
 
             if SHOW_CHARTS:
                 ac_chart_df = fp_ac_rep.sort_values("Total_Received", ascending=False).head(20)
-                fig = px.bar(ac_chart_df, x="AC_Name", y=["Unprocessed", "In_Progress", "Finalized"],
+                fig = px.bar(ac_chart_df, x="AC_Name", y=["Unprocessed", "In_Progress"],
                              barmode="stack", title=f"AC Comparison ({ac_dist_pick}) - Top 20 by Volume",
                              color_discrete_sequence=CHART_COLORWAY, labels={"value": "Forms", "variable": ""})
                 fig.update_xaxes(tickangle=-40)
@@ -1150,7 +1154,6 @@ with tab1:
                     "Total Forms Received": fmt_int(total_received),
                     "Unprocessed": f"{fmt_int(unprocessed)} ({fmt_pct(safe_div(unprocessed, total_received))})",
                     "In Progress": f"{fmt_int(in_progress)} ({fmt_pct(safe_div(in_progress, total_received))})",
-                    "Finalized": f"{fmt_int(finalized)} ({fmt_pct(safe_div(finalized, total_received))})",
                     "Eroll Inclusion": f"{fmt_int(eroll_inclusion)} ({fmt_pct(safe_div(eroll_inclusion, total_received))})",
                     "Rejected": f"{fmt_int(rejected)} ({fmt_pct(safe_div(rejected, total_received))})",
                     "Hearing Scheduled": fmt_int(hearing_sched),
@@ -1159,12 +1162,12 @@ with tab1:
                     names=status_labels, values=status_sums.values, hole=0.5,
                     title="Current Status Mix")) if len(status_sums) else None
                 dist_fig = apply_plotly_theme(px.bar(
-                    fp_dist_view, x="District", y=["Total_Received", "Finalized"],
+                    fp_dist_view, x="District", y=["Total_Received", "Eroll_Inclusion"],
                     barmode="group", title="District Comparison",
                     color_discrete_sequence=CHART_COLORWAY, labels={"value": "Forms", "variable": ""}))
                 charts_for_pdf = [c for c in [
                     ("Current Status Mix", status_fig) if status_fig is not None else None,
-                    ("District Comparison: Received vs Finalized", dist_fig),
+                    ("District Comparison: Received vs Eroll Inclusion", dist_fig),
                 ] if c is not None]
                 try:
                     pdf_bytes = build_pdf_report(
