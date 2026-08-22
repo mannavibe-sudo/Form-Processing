@@ -141,6 +141,9 @@ FORM_TYPE_LABELS = {
     "FORM7": "Form 7 (Objection / Deletion)",
     "FORM8": "Form 8 (Correction / Shifting)",
 }
+# Short form (no parenthetical) -- used in compact contexts like the PDF's
+# filter-summary line, where "Form 7" reads better than the full label.
+FORM_TYPE_SHORT = {"FORM6": "Form 6", "FORM6A": "Form 6A", "FORM7": "Form 7", "FORM8": "Form 8"}
 
 # Status columns as they appear in the raw Form_Processing.xlsx header
 # (natural workflow order). These 18 columns are mutually exclusive and sum
@@ -860,7 +863,7 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
     sub_style = ParagraphStyle("MISSub", parent=styles["Normal"], fontSize=10.5,
                                 textColor=colors.HexColor(BRAND_MUTED), spaceAfter=4)
     h2_style = ParagraphStyle("MISH2", parent=styles["Heading2"], fontSize=12.5,
-                               textColor=colors.HexColor(BRAND_PRIMARY_DARK), spaceBefore=10, spaceAfter=6)
+                               textColor=colors.HexColor(BRAND_PRIMARY_DARK), spaceBefore=7, spaceAfter=4)
     body_style = ParagraphStyle("MISBody", parent=styles["Normal"], fontSize=9, leading=13)
     filt_style = ParagraphStyle("MISFilt", parent=styles["Normal"], fontSize=9,
                                  textColor=colors.HexColor(BRAND_TEXT))
@@ -873,22 +876,36 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
         w, h = pagesize
         canvas.setFillColor(colors.HexColor(BRAND_MUTED))
         canvas.setFont("Helvetica", 8)
-        canvas.drawString(14 * mm, 8 * mm, "Official Report - Uttarakhand SIR")
-        canvas.drawRightString(w - 14 * mm, 8 * mm, f"Page {doc.page}")
+        canvas.drawString(12 * mm, 6 * mm, "Official Report - Uttarakhand SIR")
+        canvas.drawRightString(w - 12 * mm, 6 * mm, f"Page {doc.page}")
         canvas.restoreState()
 
     doc = BaseDocTemplate(buf, pagesize=pagesize,
-                           leftMargin=14 * mm, rightMargin=14 * mm,
-                           topMargin=14 * mm, bottomMargin=14 * mm)
+                           leftMargin=12 * mm, rightMargin=12 * mm,
+                           topMargin=10 * mm, bottomMargin=10 * mm)
     frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="normal")
     doc.addPageTemplates([PageTemplate(id="mis", frames=frame, onPage=header_footer)])
 
     story = []
     story.append(Paragraph(title, title_style))
+    if filters_desc:
+        story.append(Paragraph(f"<b>{filters_desc}</b>", filt_style))
     story.append(Paragraph(subtitle, sub_style))
     story.append(Spacer(1, 4))
 
+    # A spacer is only inserted *between* sections below (never trailing
+    # after the last one) -- a trailing Spacer that doesn't quite fit at the
+    # bottom of a page gets pushed onto a fresh page by itself, which is what
+    # was producing an almost-empty extra page even when everything actually
+    # fit on page 1.
+    section_added = False
+
+    def _section_gap():
+        if section_added:
+            story.append(Spacer(1, 5))
+
     if kpis:
+        _section_gap()
         story.append(Paragraph("<b>Key Performance Summary</b>", h2_style))
         rows = [["Metric", "Value"]]
         for k, v in kpis.items():
@@ -902,11 +919,11 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#EEF3FC")]),
             ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D5DCE8")),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 4),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ]))
         story.append(t)
-        story.append(Spacer(1, 8))
+        section_added = True
 
     NARROW_COLS = {"AC_No", "ACs_Reporting", "Parts", "District_No"}
     WIDE_COLS = {"District", "AC_Name"}
@@ -956,32 +973,37 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F6FA")]),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D5DCE8")),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.2),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.2),
             ("LEFTPADDING", (0, 0), (-1, -1), 4),
             ("RIGHTPADDING", (0, 0), (-1, -1), 4),
         ]))
         return t
 
     if district_df is not None and not district_df.empty and district_cols:
+        _section_gap()
         story.append(Paragraph("<b>District-wise Report</b>", h2_style))
         story.append(df_to_table(district_df, district_cols))
-        story.append(Spacer(1, 8))
+        section_added = True
 
     if ac_df is not None and not ac_df.empty and ac_cols:
+        _section_gap()
         story.append(Paragraph("<b>AC-wise Report</b>", h2_style))
         story.append(df_to_table(ac_df, ac_cols))
-        story.append(Spacer(1, 8))
+        section_added = True
 
     if charts:
+        _section_gap()
         story.append(Paragraph("<b>Charts</b>", h2_style))
-        for chart_title, fig in charts:
+        for i, (chart_title, fig) in enumerate(charts):
             png = _fig_to_png(fig)
             if png:
+                if i > 0:
+                    story.append(Spacer(1, 8))
                 img = Image(io.BytesIO(png), width=doc.width, height=doc.width * 0.45)
                 story.append(Paragraph(chart_title, body_style))
                 story.append(img)
-                story.append(Spacer(1, 8))
+        section_added = True
 
     doc.build(story)
     buf.seek(0)
@@ -1079,8 +1101,8 @@ if active_view == "fp":
         filt_parts = []
         if fp_sel_districts: filt_parts.append("District: " + ", ".join(fp_sel_districts))
         if fp_sel_acs: filt_parts.append("AC: " + ", ".join(fp_sel_acs))
-        if fp_sel_forms: filt_parts.append("Form Type: " + ", ".join(fp_sel_forms))
-        fp_filters_desc = " | ".join(filt_parts) if filt_parts else "All Districts, All ACs, All Form Types"
+        if fp_sel_forms: filt_parts.append(", ".join(FORM_TYPE_SHORT.get(f, f) for f in fp_sel_forms))
+        fp_filters_desc = " | ".join(filt_parts)
 
         if filtered.empty:
             no_data_message()
@@ -1294,7 +1316,7 @@ else:
         if nh_sel_districts: nh_filt_parts.append("District: " + ", ".join(nh_sel_districts))
         if nh_sel_acs: nh_filt_parts.append("AC: " + ", ".join(nh_sel_acs))
         if nh_pending_only: nh_filt_parts.append("Only Parts with DEO-pending cases")
-        nh_filters_desc = " | ".join(nh_filt_parts) if nh_filt_parts else "All Districts, All ACs"
+        nh_filters_desc = " | ".join(nh_filt_parts)
 
         if nh_filtered.empty:
             no_data_message()
