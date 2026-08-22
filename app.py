@@ -513,6 +513,42 @@ def inject_css():
         div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:first-child {{ padding-left: 0; }}
         div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:last-child {{ padding-right: 0; }}
         div[data-testid="stHorizontalBlock"] {{ margin-bottom: 0.9rem; }}
+
+        /* View switcher (replaces st.tabs() so only the active view's code,
+           including its sidebar filters, runs each rerun) -- restyled from a
+           plain radio group into a tab-like pill bar. Selectors verified
+           against the actual rendered DOM (Streamlit 1.62's React-Aria
+           radio markup: label[data-testid="stRadioOption"] with a
+           data-selected="true" attribute on the active option). */
+        div[data-testid="stRadio"] {{ margin-bottom: 0.4rem; }}
+        div[data-testid="stRadioGroup"] {{
+            gap: 0.5rem;
+            background: rgba(255,255,255,0.55);
+            padding: 0.35rem;
+            border-radius: 12px;
+            border: 1px solid rgba(255,255,255,0.7);
+            width: fit-content;
+        }}
+        label[data-testid="stRadioOption"] {{
+            background: transparent;
+            border-radius: 8px;
+            padding: 0.45rem 1.1rem !important;
+            margin: 0 !important;
+            transition: background 0.15s ease, color 0.15s ease;
+            cursor: pointer;
+        }}
+        label[data-testid="stRadioOption"][data-selected="true"] {{
+            background: {BRAND_PRIMARY} !important;
+        }}
+        label[data-testid="stRadioOption"][data-selected="true"] p {{
+            color: #FFFFFF !important;
+            font-weight: 600;
+        }}
+        /* Hide the small radio-dot circle, keep only the pill label text. */
+        label[data-testid="stRadioOption"] > div > div > div:not([data-testid="stMarkdownContainer"]) {{
+            display: none !important;
+        }}
+        .view-tab-spacer {{ margin-bottom: 0.6rem; }}
         /* NOTE: scoped to actual form-widget labels only (not a blanket
            p/span/li rule) -- an earlier, broader version of this rule also
            matched text inside .mis-header and turned the banner's own white
@@ -836,13 +872,13 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
         canvas.rect(0, h - 16 * mm, w, 16 * mm, fill=1, stroke=0)
         canvas.setFillColor(colors.white)
         canvas.setFont("Helvetica-Bold", 12)
-        canvas.drawString(14 * mm, h - 10.5 * mm, "Form Processing & Notice-Hearing MIS")
+        canvas.drawString(14 * mm, h - 10.5 * mm, "Form Processing & Notice-Hearing Report")
         canvas.setFont("Helvetica", 8.5)
         canvas.drawRightString(w - 14 * mm, h - 10.5 * mm,
                                 datetime.now().strftime("Generated: %d-%b-%Y %H:%M IST"))
         canvas.setFillColor(colors.HexColor(BRAND_MUTED))
         canvas.setFont("Helvetica", 8)
-        canvas.drawString(14 * mm, 8 * mm, "Official MIS Report - Uttarakhand SIR")
+        canvas.drawString(14 * mm, 8 * mm, "Official Report - Uttarakhand SIR")
         canvas.drawRightString(w - 14 * mm, 8 * mm, f"Page {doc.page}")
         canvas.restoreState()
 
@@ -897,9 +933,9 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
             return f"{val:,}"
         return str(val)
 
-    def df_to_table(df, cols, max_rows=40):
+    def df_to_table(df, cols, max_rows=None):
         cols = [c for c in cols if c in df.columns]
-        show = df[cols].head(max_rows).copy()
+        show = df[cols].head(max_rows).copy() if max_rows else df[cols].copy()
 
         weights = []
         for c in cols:
@@ -964,14 +1000,14 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
 # --------------------------------------------------------------------------
 # App
 # --------------------------------------------------------------------------
-st.set_page_config(page_title="Form Processing & Notice-Hearing MIS",
+st.set_page_config(page_title="Form Processing & Notice-Hearing Report",
                     page_icon="\U0001F5F3", layout="wide",
                     initial_sidebar_state="expanded")
 inject_css()
 
 st.markdown(f"""
 <div class="mis-header">
-    <h1>Form Processing &amp; Notice-Hearing MIS Dashboard</h1>
+    <h1>Form Processing &amp; Notice-Hearing Report Dashboard</h1>
     <p>Special Intensive Revision (SIR) &mdash; Uttarakhand &nbsp;|&nbsp; District &amp; AC-level monitoring</p>
     <span class="mis-badge">Data-driven KPIs</span>
     <span class="mis-badge">Live filters</span>
@@ -987,12 +1023,23 @@ with st.sidebar:
     st.markdown("### \U0001F4CB Dashboard Controls")
     st.caption("Filters apply live to KPIs, charts, reports and exports.")
 
-tab1, tab2 = st.tabs(["\U0001F4C4  Form Processing", "\U0001F4E8  Notice & Hearing"])
+VIEW_LABELS = {"fp": "\U0001F4C4  Form Processing", "nh": "\U0001F4E8  Notice & Hearing"}
+active_view = st.radio(
+    "View", list(VIEW_LABELS.keys()), format_func=lambda k: VIEW_LABELS[k],
+    horizontal=True, key="active_view", label_visibility="collapsed",
+)
+st.markdown('<div class="view-tab-spacer"></div>', unsafe_allow_html=True)
+
+# Only the active view's branch runs each rerun (unlike st.tabs(), where both
+# tab bodies execute every time regardless of which tab is visually shown) --
+# this is what keeps the sidebar filters scoped to whichever view is active,
+# instead of both "Form Processing Filters" and "Notice & Hearing Filters"
+# always appearing together.
 
 # ==========================================================================
-# TAB 1: FORM PROCESSING
+# VIEW: FORM PROCESSING
 # ==========================================================================
-with tab1:
+if active_view == "fp":
     if fp_err:
         st.error(f"**Form Processing data could not be loaded.**\n\n{fp_err}")
     elif fp_df is None or fp_df.empty:
@@ -1081,15 +1128,11 @@ with tab1:
                 "visible as its own column in the reports below, or via “Add more columns”."
             )
 
-            # status_sums/status_labels are needed by the PDF export below even
-            # when the on-screen charts are switched off, so compute them here
-            # unconditionally.
-            status_sums = filtered[FP_STATUS_COLS].sum()
-            status_sums = status_sums[status_sums > 0].sort_values(ascending=False)
-            status_labels = [s.replace("_", " ") for s in status_sums.index]
-
             if SHOW_CHARTS:
                 section_title("Visual Analysis")
+                status_sums = filtered[FP_STATUS_COLS].sum()
+                status_sums = status_sums[status_sums > 0].sort_values(ascending=False)
+                status_labels = [s.replace("_", " ") for s in status_sums.index]
                 v1, v2 = st.columns(2)
                 with v1:
                     if len(status_sums):
@@ -1199,24 +1242,13 @@ with tab1:
                     "Rejected": f"{fmt_int(rejected)} ({fmt_pct(safe_div(rejected, total_received))})",
                     "Hearing Scheduled": fmt_int(hearing_sched),
                 }
-                status_fig = apply_plotly_theme(px.pie(
-                    names=status_labels, values=status_sums.values, hole=0.5,
-                    title="Current Status Mix")) if len(status_sums) else None
-                dist_fig = apply_plotly_theme(px.bar(
-                    fp_dist_view, x="District", y=["Total_Received", "Eroll_Inclusion"],
-                    barmode="group", title="District Comparison",
-                    color_discrete_sequence=CHART_COLORWAY, labels={"value": "Forms", "variable": ""}))
-                charts_for_pdf = [c for c in [
-                    ("Current Status Mix", status_fig) if status_fig is not None else None,
-                    ("District Comparison: Received vs Eroll Inclusion", dist_fig),
-                ] if c is not None]
                 try:
                     pdf_bytes = build_pdf_report(
-                        title="Form Processing MIS Report",
+                        title="Form Processing Report",
                         subtitle=f"Report period: {fp_meta.get('report_period') or 'N/A'}",
                         filters_desc=fp_filters_desc, kpis=kpis_for_pdf,
                         district_df=fp_dist_view, ac_df=fp_ac_rep,
-                        charts=charts_for_pdf,
+                        charts=[],
                         # PDF stays print-friendly with the same base columns
                         # shown on screen by default (a PDF page can't fit all
                         # ~27 columns readably); the full set is in the Excel
@@ -1224,7 +1256,7 @@ with tab1:
                         district_cols=FP_DIST_BASE_COLS, ac_cols=FP_AC_BASE_COLS,
                     )
                     st.download_button("\U0001F4C4 Download PDF Report", pdf_bytes,
-                                        file_name="Form_Processing_MIS_Report.pdf",
+                                        file_name="Form_Processing_Report.pdf",
                                         mime="application/pdf", use_container_width=True)
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"PDF generation failed: {exc}")
@@ -1236,9 +1268,9 @@ with tab1:
                                     use_container_width=True)
 
 # ==========================================================================
-# TAB 2: NOTICE & HEARING
+# VIEW: NOTICE & HEARING
 # ==========================================================================
-with tab2:
+else:
     if nh_err:
         st.error(f"**Notice & Hearing data could not be loaded.**\n\n{nh_err}")
     elif nh_df is None or nh_df.empty:
@@ -1417,26 +1449,17 @@ with tab2:
                     "DEO Pending > 5 Days": f"{fmt_int(deo_pending_gt5)} ({fmt_pct(safe_div(deo_pending_gt5, deo_pending))} of backlog)",
                     "Found Ineligible for Final": fmt_int(ineligible),
                 }
-                split_fig = apply_plotly_theme(px.pie(
-                    names=["Delivered", "Pending Delivery"], values=[notice_del, notice_pend_del],
-                    hole=0.5, title="Notice Delivery Split",
-                    color_discrete_sequence=[BRAND_ACCENT, BRAND_WARN]))
-                dist_fig2 = apply_plotly_theme(px.bar(
-                    nh_dist_view, x="District", y=["Notice_Generated", "Notice_Delivered"],
-                    barmode="group", title="District Comparison",
-                    color_discrete_sequence=CHART_COLORWAY, labels={"value": "Notices", "variable": ""}))
                 try:
                     pdf_bytes2 = build_pdf_report(
-                        title="Notice & Hearing MIS Report",
+                        title="Notice & Hearing Report",
                         subtitle=f"{fmt_int(len(nh_filtered))} polling-station parts in scope",
                         filters_desc=nh_filters_desc, kpis=kpis_for_pdf2,
                         district_df=nh_dist_view, ac_df=nh_ac_rep[nh_ac_display_cols],
-                        charts=[("Notice Delivery Split", split_fig),
-                                ("District Comparison: Generated vs Delivered", dist_fig2)],
+                        charts=[],
                         district_cols=nh_dist_display_cols, ac_cols=nh_ac_display_cols,
                     )
                     st.download_button("\U0001F4C4 Download PDF Report", pdf_bytes2,
-                                        file_name="Notice_Hearing_MIS_Report.pdf",
+                                        file_name="Notice_Hearing_Report.pdf",
                                         mime="application/pdf", use_container_width=True, key="nh_dl2")
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"PDF generation failed: {exc}")
@@ -1449,7 +1472,7 @@ with tab2:
 
 st.markdown(f"""
 <div style="text-align:center; color:{BRAND_MUTED}; font-size:0.78rem; margin-top:2rem; padding-top:1rem; border-top:1px solid #E4E8F0;">
-    Form Processing &amp; Notice-Hearing MIS Dashboard &middot; Data refreshed from workbook files in this repository &middot;
+    Form Processing &amp; Notice-Hearing Report Dashboard &middot; Data refreshed from workbook files in this repository &middot;
     Generated {datetime.now().strftime('%d-%b-%Y %H:%M')} IST
 </div>
 """, unsafe_allow_html=True)
