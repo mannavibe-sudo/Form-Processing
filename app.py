@@ -1235,7 +1235,7 @@ if active_view == "fp":
 
             # ------------------ Downloads ------------------
             section_title("Downloads")
-            dcol1, dcol2, dcol3 = st.columns(3)
+            dcol1, dcol2 = st.columns(2)
             with dcol1:
                 excel_bytes = build_excel_download({
                     "Filtered Records": filtered.drop(columns=["Form_Type_Label"], errors="ignore"),
@@ -1268,17 +1268,54 @@ if active_view == "fp":
                         # export below and on screen via "Add more columns".
                         district_cols=FP_DIST_BASE_COLS, ac_cols=FP_AC_BASE_COLS,
                     )
-                    st.download_button("\U0001F4C4 Download PDF Report", pdf_bytes,
+                    st.download_button("\U0001F4C4 Download PDF Report (full)", pdf_bytes,
                                         file_name="Form_Processing_Report.pdf",
                                         mime="application/pdf", use_container_width=True)
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"PDF generation failed: {exc}")
+
+            st.caption("District-wise and AC-wise reports on their own, in Excel or PDF:")
+            dcol3, dcol4, dcol5, dcol6 = st.columns(4)
             with dcol3:
-                dist_excel = build_excel_download({"District Report": fp_dist_rep, "AC Report": fp_ac_rep})
-                st.download_button("\U0001F4E5 Download District + AC Report (Excel)", dist_excel,
-                                    file_name="Form_Processing_District_AC_Report.xlsx",
+                dist_excel = build_excel_download({"District Report": fp_dist_rep})
+                st.download_button("\U0001F4E5 District-wise (Excel)", dist_excel,
+                                    file_name="Form_Processing_District_Report.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    use_container_width=True)
+                                    use_container_width=True, key="fp_dl_dist_xlsx")
+            with dcol4:
+                try:
+                    dist_pdf_bytes = build_pdf_report(
+                        title="Form Processing Report - District-wise",
+                        subtitle=f"Report period: {fp_meta.get('report_period') or 'N/A'}",
+                        filters_desc=fp_filters_desc, kpis=None,
+                        district_df=fp_dist_view, ac_df=None, charts=[],
+                        district_cols=FP_DIST_BASE_COLS,
+                    )
+                    st.download_button("\U0001F4C4 District-wise (PDF)", dist_pdf_bytes,
+                                        file_name="Form_Processing_District_Report.pdf",
+                                        mime="application/pdf", use_container_width=True, key="fp_dl_dist_pdf")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"PDF generation failed: {exc}")
+            with dcol5:
+                ac_excel = build_excel_download({"AC Report": fp_ac_rep})
+                st.download_button("\U0001F4E5 AC-wise (Excel)", ac_excel,
+                                    file_name="Form_Processing_AC_Report.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True, key="fp_dl_ac_xlsx")
+            with dcol6:
+                try:
+                    ac_pdf_bytes = build_pdf_report(
+                        title="Form Processing Report - AC-wise",
+                        subtitle=f"Report period: {fp_meta.get('report_period') or 'N/A'}",
+                        filters_desc=fp_filters_desc, kpis=None,
+                        district_df=None, ac_df=fp_ac_rep, charts=[],
+                        ac_cols=FP_AC_BASE_COLS,
+                    )
+                    st.download_button("\U0001F4C4 AC-wise (PDF)", ac_pdf_bytes,
+                                        file_name="Form_Processing_AC_Report.pdf",
+                                        mime="application/pdf", use_container_width=True, key="fp_dl_ac_pdf")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"PDF generation failed: {exc}")
 
 # ==========================================================================
 # VIEW: NOTICE & HEARING
@@ -1441,7 +1478,7 @@ else:
 
             # ------------------ Downloads ------------------
             section_title("Downloads")
-            dcol1, dcol2, dcol3 = st.columns(3)
+            dcol1, dcol2 = st.columns(2)
             with dcol1:
                 excel_bytes2 = build_excel_download({
                     "Filtered Records": nh_filtered,
@@ -1471,17 +1508,54 @@ else:
                         charts=[],
                         district_cols=nh_dist_display_cols, ac_cols=nh_ac_display_cols,
                     )
-                    st.download_button("\U0001F4C4 Download PDF Report", pdf_bytes2,
+                    st.download_button("\U0001F4C4 Download PDF Report (full)", pdf_bytes2,
                                         file_name="Notice_Hearing_Report.pdf",
                                         mime="application/pdf", use_container_width=True, key="nh_dl2")
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"PDF generation failed: {exc}")
+
+            st.caption("District-wise and AC-wise reports on their own, in Excel or PDF:")
+            dcol3, dcol4, dcol5, dcol6 = st.columns(4)
             with dcol3:
-                dist_excel2 = build_excel_download({"District Report": nh_dist_rep, "AC Report": nh_ac_rep})
-                st.download_button("\U0001F4E5 Download District + AC Report (Excel)", dist_excel2,
-                                    file_name="Notice_Hearing_District_AC_Report.xlsx",
+                dist_excel2 = build_excel_download({"District Report": nh_dist_rep})
+                st.download_button("\U0001F4E5 District-wise (Excel)", dist_excel2,
+                                    file_name="Notice_Hearing_District_Report.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                    use_container_width=True, key="nh_dl3")
+                                    use_container_width=True, key="nh_dl_dist_xlsx")
+            with dcol4:
+                try:
+                    nh_dist_pdf_bytes = build_pdf_report(
+                        title="Notice & Hearing Report - District-wise",
+                        subtitle=f"{fmt_int(len(nh_filtered))} polling-station parts in scope",
+                        filters_desc=nh_filters_desc, kpis=None,
+                        district_df=nh_dist_view, ac_df=None, charts=[],
+                        district_cols=nh_dist_display_cols,
+                    )
+                    st.download_button("\U0001F4C4 District-wise (PDF)", nh_dist_pdf_bytes,
+                                        file_name="Notice_Hearing_District_Report.pdf",
+                                        mime="application/pdf", use_container_width=True, key="nh_dl_dist_pdf")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"PDF generation failed: {exc}")
+            with dcol5:
+                ac_excel2 = build_excel_download({"AC Report": nh_ac_rep})
+                st.download_button("\U0001F4E5 AC-wise (Excel)", ac_excel2,
+                                    file_name="Notice_Hearing_AC_Report.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True, key="nh_dl_ac_xlsx")
+            with dcol6:
+                try:
+                    nh_ac_pdf_bytes = build_pdf_report(
+                        title="Notice & Hearing Report - AC-wise",
+                        subtitle=f"{fmt_int(len(nh_filtered))} polling-station parts in scope",
+                        filters_desc=nh_filters_desc, kpis=None,
+                        district_df=None, ac_df=nh_ac_rep[nh_ac_display_cols], charts=[],
+                        ac_cols=nh_ac_display_cols,
+                    )
+                    st.download_button("\U0001F4C4 AC-wise (PDF)", nh_ac_pdf_bytes,
+                                        file_name="Notice_Hearing_AC_Report.pdf",
+                                        mime="application/pdf", use_container_width=True, key="nh_dl_ac_pdf")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"PDF generation failed: {exc}")
 
 st.markdown(f"""
 <div style="text-align:center; color:{BRAND_MUTED}; font-size:0.78rem; margin-top:2rem; padding-top:1rem; border-top:1px solid #E4E8F0;">
