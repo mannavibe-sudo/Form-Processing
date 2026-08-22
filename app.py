@@ -123,7 +123,7 @@ SHOW_CHARTS = False
 # Excel/PDF exports, so no data is lost -- only the on-screen table is leaner.
 # --------------------------------------------------------------------------
 NH_DIST_SCREEN_COLS = ["District", "Notice_Generated", "Notice_Delivered",
-                        "Delivery_Rate_%", "DEO_Total_Pending", "DEO_Pending_GT5"]
+                        "DEO_Total_Pending", "DEO_Pending_GT5"]
 NH_AC_SCREEN_COLS = ["District", "AC_Name", "Notice_Generated", "Notice_Delivered",
                       "DEO_Total_Pending", "DEO_Pending_GT5"]
 # Form Processing's screen columns are defined further below, right after
@@ -132,8 +132,8 @@ NH_AC_SCREEN_COLS = ["District", "AC_Name", "Notice_Generated", "Notice_Delivere
 
 # Rate/percent columns get a colour-coded pill in the on-screen tables so an
 # officer can spot problem districts/ACs at a glance without reading numbers.
-RATE_COLS_HIGHER_BETTER = {"Inclusion_Rate_%", "Delivery_Rate_%", "Hearing_Rate_%"}
-RATE_COLS_LOWER_BETTER = {"Pending_GT5_%"}
+RATE_COLS_HIGHER_BETTER = {"Inclusion_Rate_%"}
+RATE_COLS_LOWER_BETTER = set()
 
 FORM_TYPE_LABELS = {
     "FORM6": "Form 6 (New Registration)",
@@ -295,11 +295,6 @@ def load_notice_hearing(path: str):
     df = df[(df["District"] != "") & (df["AC_Name"] != "")].copy()
     df = df.drop_duplicates(subset=["District_No", "AC_No", "Part_No"])
 
-    df["Delivery_Rate"] = df.apply(
-        lambda r: safe_div(r["Notice_Delivered"], r["Notice_Generated"]), axis=1)
-    df["Hearing_Rate"] = df.apply(
-        lambda r: safe_div(r["Hearings_Held"], r["Notice_Delivered"]), axis=1)
-
     return df, None
 
 
@@ -427,9 +422,6 @@ def nh_district_report(df: pd.DataFrame) -> pd.DataFrame:
         DEO_Pending_GT5=("DEO_Pending_GT5", "sum"),
         Ineligible_Final=("Ineligible_Final", "sum"),
     )
-    g["Delivery_Rate_%"] = g.apply(lambda r: safe_div(r["Notice_Delivered"], r["Notice_Generated"]), axis=1)
-    g["Hearing_Rate_%"] = g.apply(lambda r: safe_div(r["Hearings_Held"], r["Notice_Delivered"]), axis=1)
-    g["Pending_GT5_%"] = g.apply(lambda r: safe_div(r["DEO_Pending_GT5"], r["DEO_Total_Pending"]), axis=1)
     return g.sort_values("Notice_Generated", ascending=False)
 
 
@@ -446,8 +438,6 @@ def nh_ac_report(df: pd.DataFrame) -> pd.DataFrame:
         DEO_Pending_GT5=("DEO_Pending_GT5", "sum"),
         Ineligible_Final=("Ineligible_Final", "sum"),
     )
-    g["Delivery_Rate_%"] = g.apply(lambda r: safe_div(r["Notice_Delivered"], r["Notice_Generated"]), axis=1)
-    g["Hearing_Rate_%"] = g.apply(lambda r: safe_div(r["Hearings_Held"], r["Notice_Delivered"]), axis=1)
     # Group rows by District (districts ordered by their own total volume,
     # highest first -- matching the District-wise report above), and within
     # each district rank ACs from top notices-generated to lowest.
@@ -858,14 +848,14 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
 
     buf = io.BytesIO()
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle("MISTitle", parent=styles["Title"], fontSize=17,
+    title_style = ParagraphStyle("MISTitle", parent=styles["Title"], fontSize=19,
                                   textColor=colors.HexColor(BRAND_PRIMARY_DARK), alignment=TA_LEFT)
-    sub_style = ParagraphStyle("MISSub", parent=styles["Normal"], fontSize=10.5,
+    sub_style = ParagraphStyle("MISSub", parent=styles["Normal"], fontSize=11.5,
                                 textColor=colors.HexColor(BRAND_MUTED), spaceAfter=4)
-    h2_style = ParagraphStyle("MISH2", parent=styles["Heading2"], fontSize=12.5,
-                               textColor=colors.HexColor(BRAND_PRIMARY_DARK), spaceBefore=7, spaceAfter=4)
-    body_style = ParagraphStyle("MISBody", parent=styles["Normal"], fontSize=9, leading=13)
-    filt_style = ParagraphStyle("MISFilt", parent=styles["Normal"], fontSize=9,
+    h2_style = ParagraphStyle("MISH2", parent=styles["Heading2"], fontSize=14,
+                               textColor=colors.HexColor(BRAND_PRIMARY_DARK), spaceBefore=8, spaceAfter=5)
+    body_style = ParagraphStyle("MISBody", parent=styles["Normal"], fontSize=10, leading=14)
+    filt_style = ParagraphStyle("MISFilt", parent=styles["Normal"], fontSize=10.5,
                                  textColor=colors.HexColor(BRAND_TEXT))
 
     def header_footer(canvas, doc):
@@ -915,22 +905,23 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_PRIMARY)),
             ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
             ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 9),
+            ("FONTSIZE", (0, 0), (-1, -1), 10.5),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#EEF3FC")]),
             ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D5DCE8")),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
         ]))
         story.append(t)
         section_added = True
 
-    NARROW_COLS = {"AC_No", "ACs_Reporting", "Parts", "District_No"}
+    NARROW_COLS = {"AC_No", "Parts", "District_No"}
+    MEDIUM_COLS = {"ACs_Reporting"}  # short numbers, but a longer header ("ACs Reporting")
     WIDE_COLS = {"District", "AC_Name"}
-    cell_style = ParagraphStyle("MISCell", fontName="Helvetica", fontSize=7.4, leading=9)
+    cell_style = ParagraphStyle("MISCell", fontName="Helvetica", fontSize=9.5, leading=12)
     cell_style_r = ParagraphStyle("MISCellR", parent=cell_style, alignment=2)  # right-align
-    header_cell_style = ParagraphStyle("MISCellH", fontName="Helvetica-Bold", fontSize=7.6,
-                                        leading=9.5, textColor=colors.white)
+    header_cell_style = ParagraphStyle("MISCellH", fontName="Helvetica-Bold", fontSize=9.7,
+                                        leading=12, textColor=colors.white)
 
     def _fmt_cell(val, col):
         if isinstance(val, float):
@@ -949,6 +940,8 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
         for c in cols:
             if c in NARROW_COLS:
                 weights.append(0.55)
+            elif c in MEDIUM_COLS:
+                weights.append(0.95)
             elif c in WIDE_COLS:
                 weights.append(1.7)
             else:
@@ -973,10 +966,10 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F6FA")]),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D5DCE8")),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 2.2),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.2),
-            ("LEFTPADDING", (0, 0), (-1, -1), 4),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 3.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
+            ("LEFTPADDING", (0, 0), (-1, -1), 5),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 5),
         ]))
         return t
 
@@ -1428,8 +1421,8 @@ else:
             section_title("District-wise Report")
             nh_dist_rep = nh_district_report(nh_filtered)
             nh_dist_display_cols = ["District", "ACs_Reporting", "Parts", "Notice_Generated", "Notice_Delivered",
-                                     "Delivery_Rate_%", "Hearings_Held", "Hearing_Rate_%", "DEO_Total_Pending",
-                                     "DEO_Pending_GT5", "Pending_GT5_%", "Ineligible_Final"]
+                                     "Hearings_Held", "DEO_Total_Pending",
+                                     "DEO_Pending_GT5", "Ineligible_Final"]
             nh_sort_opt = st.selectbox("Sort district report by", nh_dist_display_cols[1:],
                                         index=nh_dist_display_cols.index("Notice_Generated") - 1, key="nh_dist_sort")
             nh_dist_view = nh_dist_rep[nh_dist_display_cols].sort_values(nh_sort_opt, ascending=False)
@@ -1437,7 +1430,6 @@ else:
                 nh_dist_view, NH_DIST_SCREEN_COLS,
                 formats={
                     "Notice_Generated": "{:,.0f}", "Notice_Delivered": "{:,.0f}",
-                    "Delivery_Rate_%": "{:.1f}%",
                     "DEO_Total_Pending": "{:,.0f}", "DEO_Pending_GT5": "{:,.0f}",
                 },
                 caption="Showing key monitoring columns. Full column set is included in the Excel/PDF export below.",
@@ -1457,7 +1449,7 @@ else:
             nh_ac_scope = nh_filtered if nh_ac_dist_pick == "All Districts" else nh_filtered[nh_filtered["District"] == nh_ac_dist_pick]
             nh_ac_rep = nh_ac_report(nh_ac_scope)
             nh_ac_display_cols = ["District", "AC_No", "AC_Name", "Parts", "Notice_Generated", "Notice_Delivered",
-                                   "Delivery_Rate_%", "Hearings_Held", "Hearing_Rate_%", "DEO_Total_Pending",
+                                   "Hearings_Held", "DEO_Total_Pending",
                                    "DEO_Pending_GT5"]
             render_html_table(
                 nh_ac_rep, NH_AC_SCREEN_COLS,
