@@ -866,16 +866,11 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
                                  textColor=colors.HexColor(BRAND_TEXT))
 
     def header_footer(canvas, doc):
+        # Top brand band (title text + "Generated: ..." timestamp) and the
+        # "Filters Applied" block are intentionally not drawn -- removed so
+        # the District-wise Report starts higher up / fits on page 1.
         canvas.saveState()
         w, h = pagesize
-        canvas.setFillColor(colors.HexColor(BRAND_PRIMARY))
-        canvas.rect(0, h - 16 * mm, w, 16 * mm, fill=1, stroke=0)
-        canvas.setFillColor(colors.white)
-        canvas.setFont("Helvetica-Bold", 12)
-        canvas.drawString(14 * mm, h - 10.5 * mm, "Form Processing & Notice-Hearing Report")
-        canvas.setFont("Helvetica", 8.5)
-        canvas.drawRightString(w - 14 * mm, h - 10.5 * mm,
-                                datetime.now().strftime("Generated: %d-%b-%Y %H:%M IST"))
         canvas.setFillColor(colors.HexColor(BRAND_MUTED))
         canvas.setFont("Helvetica", 8)
         canvas.drawString(14 * mm, 8 * mm, "Official Report - Uttarakhand SIR")
@@ -884,7 +879,7 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
 
     doc = BaseDocTemplate(buf, pagesize=pagesize,
                            leftMargin=14 * mm, rightMargin=14 * mm,
-                           topMargin=20 * mm, bottomMargin=14 * mm)
+                           topMargin=14 * mm, bottomMargin=14 * mm)
     frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="normal")
     doc.addPageTemplates([PageTemplate(id="mis", frames=frame, onPage=header_footer)])
 
@@ -892,10 +887,6 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
     story.append(Paragraph(title, title_style))
     story.append(Paragraph(subtitle, sub_style))
     story.append(Spacer(1, 4))
-
-    story.append(Paragraph("<b>Filters Applied</b>", h2_style))
-    story.append(Paragraph(filters_desc or "All records (no filters applied)", filt_style))
-    story.append(Spacer(1, 6))
 
     if kpis:
         story.append(Paragraph("<b>Key Performance Summary</b>", h2_style))
