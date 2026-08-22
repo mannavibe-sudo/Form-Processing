@@ -385,7 +385,13 @@ def fp_ac_report(df: pd.DataFrame) -> pd.DataFrame:
     )
     g["Disposal_Rate_%"] = g.apply(lambda r: safe_div(r["Finalized"], r["Total_Received"]), axis=1)
     g["Inclusion_Rate_%"] = g.apply(lambda r: safe_div(r["Eroll_Inclusion"], r["Total_Received"]), axis=1)
-    return g.sort_values("Total_Received", ascending=False)
+    # Group rows by District (districts ordered by their own total volume,
+    # highest first -- matching the District-wise report above), and within
+    # each district rank ACs from top receiving to lowest.
+    dist_total = g.groupby("District")["Total_Received"].transform("sum")
+    return (g.assign(_dist_total=dist_total)
+             .sort_values(["_dist_total", "District", "Total_Received"], ascending=[False, True, False])
+             .drop(columns="_dist_total"))
 
 
 def nh_district_report(df: pd.DataFrame) -> pd.DataFrame:
@@ -423,7 +429,13 @@ def nh_ac_report(df: pd.DataFrame) -> pd.DataFrame:
     )
     g["Delivery_Rate_%"] = g.apply(lambda r: safe_div(r["Notice_Delivered"], r["Notice_Generated"]), axis=1)
     g["Hearing_Rate_%"] = g.apply(lambda r: safe_div(r["Hearings_Held"], r["Notice_Delivered"]), axis=1)
-    return g.sort_values("Notice_Generated", ascending=False)
+    # Group rows by District (districts ordered by their own total volume,
+    # highest first -- matching the District-wise report above), and within
+    # each district rank ACs from top notices-generated to lowest.
+    dist_total = g.groupby("District")["Notice_Generated"].transform("sum")
+    return (g.assign(_dist_total=dist_total)
+             .sort_values(["_dist_total", "District", "Notice_Generated"], ascending=[False, True, False])
+             .drop(columns="_dist_total"))
 
 
 # --------------------------------------------------------------------------
@@ -456,22 +468,33 @@ def inject_css():
             border-right: 1px solid rgba(255,255,255,0.6);
         }}
         section[data-testid="stSidebar"] * {{ color: {BRAND_TEXT} !important; }}
-        [data-testid="stMarkdownContainer"] p, [data-testid="stMarkdownContainer"] li,
-        [data-testid="stMarkdownContainer"] span, label, .stSelectbox label,
-        .stMultiSelect label, .stCheckbox label p {{ color: {BRAND_TEXT} !important; }}
+        /* NOTE: scoped to actual form-widget labels only (not a blanket
+           p/span/li rule) -- an earlier, broader version of this rule also
+           matched text inside .mis-header and turned the banner's own white
+           text black. Keep this narrow. */
+        label, .stSelectbox label, .stMultiSelect label, .stCheckbox label p {{
+            color: {BRAND_TEXT} !important;
+        }}
 
         .mis-header {{
             background: linear-gradient(120deg, {BRAND_PRIMARY} 0%, {BRAND_PRIMARY_DARK} 100%);
-            color: white; padding: 1.4rem 1.8rem; border-radius: 16px;
+            color: #ffffff; padding: 1.4rem 1.8rem; border-radius: 16px;
             margin-bottom: 1.2rem; box-shadow: 0 8px 26px rgba(11,61,145,0.28);
             border: 1px solid rgba(255,255,255,0.18);
         }}
-        .mis-header h1 {{ margin: 0; font-size: 1.55rem; font-weight: 700; letter-spacing: 0.2px; }}
-        .mis-header p {{ margin: 0.3rem 0 0 0; opacity: 0.9; font-size: 0.92rem; }}
+        .mis-header h1 {{
+            margin: 0; font-size: 1.55rem; font-weight: 700; letter-spacing: 0.2px;
+            color: #ffffff !important;
+        }}
+        .mis-header p {{
+            margin: 0.3rem 0 0 0; opacity: 0.95; font-size: 0.92rem;
+            color: #ffffff !important;
+        }}
         .mis-badge {{
-            display: inline-block; background: rgba(255,255,255,0.16);
+            display: inline-block; background: rgba(255,255,255,0.18);
             padding: 0.2rem 0.7rem; border-radius: 999px; font-size: 0.78rem;
-            margin-top: 0.55rem; margin-right: 0.4rem; border: 1px solid rgba(255,255,255,0.25);
+            margin-top: 0.55rem; margin-right: 0.4rem; border: 1px solid rgba(255,255,255,0.3);
+            color: #ffffff !important; font-weight: 600;
         }}
 
         /* Glassmorphism: translucent, blurred, soft-bordered cards */
@@ -938,8 +961,8 @@ with tab1:
                 "Form Type", fp_form_types,
                 format_func=lambda x: FORM_TYPE_LABELS.get(x, x), default=[], key="fp_form")
             fp_metric_options = {
-                "Total Received": "Total_Received", "Unprocessed (Backlog)": "Unprocessed",
-                "In Progress (Workflow)": "In_Progress", "Finalized (Disposed)": "Finalized",
+                "Total Received": "Total_Received", "Unprocessed": "Unprocessed",
+                "In Progress": "In_Progress", "Finalized": "Finalized",
                 "Eroll Inclusion": "Eroll_Inclusion", "Rejected": "Rejected",
                 "Hearing Scheduled": "Hearing_Scheduled",
             }
@@ -980,11 +1003,11 @@ with tab1:
             c1, c2, c3, c4 = st.columns(4)
             kpi_card(c1, "Total Forms Received", fmt_int(total_received),
                      f"{filtered['AC_No'].nunique()} ACs · {filtered['Form_Type'].nunique()} form types")
-            kpi_card(c2, "Unprocessed (Backlog)", fmt_int(unprocessed),
+            kpi_card(c2, "Unprocessed", fmt_int(unprocessed),
                      f"{fmt_pct(safe_div(unprocessed, total_received))} of received", color=BRAND_DANGER)
-            kpi_card(c3, "In Progress (Workflow)", fmt_int(in_progress),
+            kpi_card(c3, "In Progress", fmt_int(in_progress),
                      f"{fmt_pct(safe_div(in_progress, total_received))} of received", color=BRAND_WARN)
-            kpi_card(c4, "Finalized (Disposed)", fmt_int(finalized),
+            kpi_card(c4, "Finalized", fmt_int(finalized),
                      f"{fmt_pct(safe_div(finalized, total_received))} disposal rate", color=BRAND_ACCENT)
 
             c5, c6, c7, c8 = st.columns(4)
@@ -1109,9 +1132,9 @@ with tab1:
             with dcol2:
                 kpis_for_pdf = {
                     "Total Forms Received": fmt_int(total_received),
-                    "Unprocessed (Backlog)": f"{fmt_int(unprocessed)} ({fmt_pct(safe_div(unprocessed, total_received))})",
-                    "In Progress (Workflow)": f"{fmt_int(in_progress)} ({fmt_pct(safe_div(in_progress, total_received))})",
-                    "Finalized (Disposed)": f"{fmt_int(finalized)} ({fmt_pct(safe_div(finalized, total_received))})",
+                    "Unprocessed": f"{fmt_int(unprocessed)} ({fmt_pct(safe_div(unprocessed, total_received))})",
+                    "In Progress": f"{fmt_int(in_progress)} ({fmt_pct(safe_div(in_progress, total_received))})",
+                    "Finalized": f"{fmt_int(finalized)} ({fmt_pct(safe_div(finalized, total_received))})",
                     "Eroll Inclusion": f"{fmt_int(eroll_inclusion)} ({fmt_pct(safe_div(eroll_inclusion, total_received))})",
                     "Rejected": f"{fmt_int(rejected)} ({fmt_pct(safe_div(rejected, total_received))})",
                     "Hearing Scheduled": fmt_int(hearing_sched),
@@ -1209,7 +1232,7 @@ with tab2:
                      f"{fmt_pct(safe_div(hearings_held, notice_del))} of delivered notices")
 
             c5, c6, c7 = st.columns(3)
-            kpi_card(c5, "DEO Pending (Backlog)", fmt_int(deo_pending),
+            kpi_card(c5, "DEO Pending", fmt_int(deo_pending),
                      f"{fmt_pct(safe_div(deo_pending, notice_gen))} of notices generated", color=BRAND_DANGER)
             kpi_card(c6, "DEO Pending > 5 Days", fmt_int(deo_pending_gt5),
                      f"{fmt_pct(safe_div(deo_pending_gt5, deo_pending))} of DEO backlog is overdue", color=BRAND_DANGER)
@@ -1326,7 +1349,7 @@ with tab2:
                     "Notices Delivered": f"{fmt_int(notice_del)} ({fmt_pct(safe_div(notice_del, notice_gen))})",
                     "Notice Pending Delivery": fmt_int(notice_pend_del),
                     "Hearings Held": f"{fmt_int(hearings_held)} ({fmt_pct(safe_div(hearings_held, notice_del))} of delivered)",
-                    "DEO Pending (Backlog)": fmt_int(deo_pending),
+                    "DEO Pending": fmt_int(deo_pending),
                     "DEO Pending > 5 Days": f"{fmt_int(deo_pending_gt5)} ({fmt_pct(safe_div(deo_pending_gt5, deo_pending))} of backlog)",
                     "Found Ineligible for Final": fmt_int(ineligible),
                 }
