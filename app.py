@@ -122,14 +122,13 @@ SHOW_CHARTS = False
 # (*_display_cols, defined next to each report below) are still used for the
 # Excel/PDF exports, so no data is lost -- only the on-screen table is leaner.
 # --------------------------------------------------------------------------
-FP_DIST_SCREEN_COLS = ["District", "Total_Received", "Unprocessed", "Finalized",
-                        "Eroll_Inclusion", "Disposal_Rate_%", "Backlog_Rate_%"]
-FP_AC_SCREEN_COLS = ["District", "AC_Name", "Total_Received", "Unprocessed",
-                      "Finalized", "Eroll_Inclusion", "Disposal_Rate_%"]
 NH_DIST_SCREEN_COLS = ["District", "Notice_Generated", "Notice_Delivered",
                         "Delivery_Rate_%", "DEO_Total_Pending", "DEO_Pending_GT5"]
 NH_AC_SCREEN_COLS = ["District", "AC_Name", "Notice_Generated", "Notice_Delivered",
                       "DEO_Total_Pending", "DEO_Pending_GT5"]
+# Form Processing's screen columns are defined further below, right after
+# FP_STATUS_COLS -- they're built from that list (every raw status column
+# from the sheet), so they can't be defined before it exists.
 
 # Rate/percent columns get a colour-coded pill in the on-screen tables so an
 # officer can spot problem districts/ACs at a glance without reading numbers.
@@ -172,6 +171,34 @@ FP_FINAL_COLS = ["Accepted", "Rejected", "Eroll_Inclusion"]
 # workflow" -- actively moving through the process but not yet finalized.
 FP_INPROGRESS_COLS = [c for c in FP_STATUS_COLS
                        if c not in FP_FINAL_COLS + ["Unprocessed"]]
+
+# --------------------------------------------------------------------------
+# On-screen Form Processing report tables: default to literal, recognisable
+# columns straight from Form_Processing.xlsx (identifiers + Total Form
+# Received + a handful of the raw status columns) -- nothing invented. Every
+# other raw status column, plus the derived Finalized / In Progress / rate
+# metrics, is available as an optional "add columns" picker so nothing from
+# the sheet is hidden -- it's just not cluttering the default view.
+# --------------------------------------------------------------------------
+FP_DIST_BASE_COLS = ["District", "Total_Received", "Hearing_Scheduled",
+                      "Rejected", "Accepted", "Eroll_Inclusion"]
+FP_AC_BASE_COLS = ["District", "AC_No", "AC_Name", "Total_Received",
+                    "Hearing_Scheduled", "Rejected", "Accepted", "Eroll_Inclusion"]
+FP_DIST_EXTRA_COLS = (["ACs_Reporting"]
+                       + [c for c in FP_STATUS_COLS if c not in FP_DIST_BASE_COLS]
+                       + ["Finalized", "In_Progress", "Disposal_Rate_%",
+                          "Inclusion_Rate_%", "Backlog_Rate_%"])
+FP_AC_EXTRA_COLS = ([c for c in FP_STATUS_COLS if c not in FP_AC_BASE_COLS]
+                     + ["Finalized", "In_Progress", "Disposal_Rate_%", "Inclusion_Rate_%"])
+
+# Format spec covering every possible Form Processing report column (base +
+# extra), used regardless of which optional columns the user adds on screen.
+FP_COL_FORMATS = {c: "{:,.0f}" for c in FP_STATUS_COLS}
+FP_COL_FORMATS.update({
+    "Total_Received": "{:,.0f}", "Finalized": "{:,.0f}", "In_Progress": "{:,.0f}",
+    "ACs_Reporting": "{:,.0f}",
+    "Disposal_Rate_%": "{:.1f}%", "Inclusion_Rate_%": "{:.1f}%", "Backlog_Rate_%": "{:.1f}%",
+})
 
 
 # --------------------------------------------------------------------------
@@ -353,17 +380,11 @@ def load_form_processing(path: str, ac_district_map: dict):
 def fp_district_report(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-    g = df.groupby("District", as_index=False).agg(
-        ACs_Reporting=("AC_No", "nunique"),
-        Total_Received=("Total_Received", "sum"),
-        Unprocessed=("Unprocessed", "sum"),
-        In_Progress=("In_Progress", "sum"),
-        Accepted=("Accepted", "sum"),
-        Rejected=("Rejected", "sum"),
-        Eroll_Inclusion=("Eroll_Inclusion", "sum"),
-        Finalized=("Finalized", "sum"),
-        Hearing_Scheduled=("Hearing_Scheduled", "sum"),
-    )
+    agg_kwargs = {"ACs_Reporting": ("AC_No", "nunique"), "Total_Received": ("Total_Received", "sum")}
+    agg_kwargs.update({c: (c, "sum") for c in FP_STATUS_COLS})
+    g = df.groupby("District", as_index=False).agg(**agg_kwargs)
+    g["Finalized"] = g[FP_FINAL_COLS].sum(axis=1)
+    g["In_Progress"] = g[FP_INPROGRESS_COLS].sum(axis=1)
     g["Disposal_Rate_%"] = g.apply(lambda r: safe_div(r["Finalized"], r["Total_Received"]), axis=1)
     g["Inclusion_Rate_%"] = g.apply(lambda r: safe_div(r["Eroll_Inclusion"], r["Total_Received"]), axis=1)
     g["Backlog_Rate_%"] = g.apply(lambda r: safe_div(r["Unprocessed"], r["Total_Received"]), axis=1)
@@ -373,16 +394,11 @@ def fp_district_report(df: pd.DataFrame) -> pd.DataFrame:
 def fp_ac_report(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
-    g = df.groupby(["District", "AC_No", "AC_Name"], as_index=False).agg(
-        Total_Received=("Total_Received", "sum"),
-        Unprocessed=("Unprocessed", "sum"),
-        In_Progress=("In_Progress", "sum"),
-        Accepted=("Accepted", "sum"),
-        Rejected=("Rejected", "sum"),
-        Eroll_Inclusion=("Eroll_Inclusion", "sum"),
-        Finalized=("Finalized", "sum"),
-        Hearing_Scheduled=("Hearing_Scheduled", "sum"),
-    )
+    agg_kwargs = {"Total_Received": ("Total_Received", "sum")}
+    agg_kwargs.update({c: (c, "sum") for c in FP_STATUS_COLS})
+    g = df.groupby(["District", "AC_No", "AC_Name"], as_index=False).agg(**agg_kwargs)
+    g["Finalized"] = g[FP_FINAL_COLS].sum(axis=1)
+    g["In_Progress"] = g[FP_INPROGRESS_COLS].sum(axis=1)
     g["Disposal_Rate_%"] = g.apply(lambda r: safe_div(r["Finalized"], r["Total_Received"]), axis=1)
     g["Inclusion_Rate_%"] = g.apply(lambda r: safe_div(r["Eroll_Inclusion"], r["Total_Received"]), axis=1)
     # Group rows by District (districts ordered by their own total volume,
@@ -1066,20 +1082,20 @@ with tab1:
             # ------------------ District-wise report ------------------
             section_title("District-wise Report")
             fp_dist_rep = fp_district_report(filtered)
-            fp_dist_display_cols = ["District", "ACs_Reporting", "Total_Received", "Unprocessed",
-                                     "In_Progress", "Finalized", "Eroll_Inclusion", "Rejected",
-                                     "Disposal_Rate_%", "Inclusion_Rate_%", "Backlog_Rate_%"]
+            fp_dist_display_cols = FP_DIST_BASE_COLS + FP_DIST_EXTRA_COLS
             sort_opt = st.selectbox("Sort district report by", fp_dist_display_cols[1:],
                                      index=fp_dist_display_cols.index("Total_Received") - 1, key="fp_dist_sort")
             fp_dist_view = fp_dist_rep[fp_dist_display_cols].sort_values(sort_opt, ascending=False)
+            fp_dist_extra_pick = st.multiselect(
+                "Add more columns (optional) -- every column below is exactly as named in Form_Processing.xlsx",
+                FP_DIST_EXTRA_COLS, default=[], key="fp_dist_extra_cols",
+                format_func=lambda c: c.replace("_", " "),
+            )
             render_html_table(
-                fp_dist_view, FP_DIST_SCREEN_COLS,
-                formats={
-                    "Total_Received": "{:,.0f}", "Unprocessed": "{:,.0f}",
-                    "Finalized": "{:,.0f}", "Eroll_Inclusion": "{:,.0f}",
-                    "Disposal_Rate_%": "{:.1f}%", "Backlog_Rate_%": "{:.1f}%",
-                },
-                caption="Showing key monitoring columns. Full column set is included in the Excel/PDF export below.",
+                fp_dist_view, FP_DIST_BASE_COLS + fp_dist_extra_pick,
+                formats=FP_COL_FORMATS,
+                caption="Columns match Form_Processing.xlsx exactly (Finalized/In Progress/rates are optional, "
+                        "derived totals -- add them above). Full column set is also in the Excel/PDF export below.",
             )
 
             if SHOW_CHARTS:
@@ -1095,17 +1111,17 @@ with tab1:
                                          key="fp_ac_district_pick")
             ac_scope_df = filtered if ac_dist_pick == "All Districts" else filtered[filtered["District"] == ac_dist_pick]
             fp_ac_rep = fp_ac_report(ac_scope_df)
-            fp_ac_display_cols = ["District", "AC_No", "AC_Name", "Total_Received", "Unprocessed",
-                                   "In_Progress", "Finalized", "Eroll_Inclusion", "Rejected",
-                                   "Disposal_Rate_%", "Inclusion_Rate_%"]
+            fp_ac_display_cols = FP_AC_BASE_COLS + FP_AC_EXTRA_COLS
+            fp_ac_extra_pick = st.multiselect(
+                "Add more columns (optional) -- every column below is exactly as named in Form_Processing.xlsx",
+                FP_AC_EXTRA_COLS, default=[], key="fp_ac_extra_cols",
+                format_func=lambda c: c.replace("_", " "),
+            )
             render_html_table(
-                fp_ac_rep, FP_AC_SCREEN_COLS,
-                formats={
-                    "Total_Received": "{:,.0f}", "Unprocessed": "{:,.0f}",
-                    "Finalized": "{:,.0f}", "Eroll_Inclusion": "{:,.0f}",
-                    "Disposal_Rate_%": "{:.1f}%",
-                },
-                caption="Showing key monitoring columns. Full column set is included in the Excel/PDF export below.",
+                fp_ac_rep, FP_AC_BASE_COLS + fp_ac_extra_pick,
+                formats=FP_COL_FORMATS,
+                caption="Columns match Form_Processing.xlsx exactly (Finalized/In Progress/rates are optional, "
+                        "derived totals -- add them above). Full column set is also in the Excel/PDF export below.",
             )
 
             if SHOW_CHARTS:
@@ -1155,9 +1171,13 @@ with tab1:
                         title="Form Processing MIS Report",
                         subtitle=f"Report period: {fp_meta.get('report_period') or 'N/A'}",
                         filters_desc=fp_filters_desc, kpis=kpis_for_pdf,
-                        district_df=fp_dist_view, ac_df=fp_ac_rep[fp_ac_display_cols],
+                        district_df=fp_dist_view, ac_df=fp_ac_rep,
                         charts=charts_for_pdf,
-                        district_cols=fp_dist_display_cols, ac_cols=fp_ac_display_cols,
+                        # PDF stays print-friendly with the same base columns
+                        # shown on screen by default (a PDF page can't fit all
+                        # ~27 columns readably); the full set is in the Excel
+                        # export below and on screen via "Add more columns".
+                        district_cols=FP_DIST_BASE_COLS, ac_cols=FP_AC_BASE_COLS,
                     )
                     st.download_button("\U0001F4C4 Download PDF Report", pdf_bytes,
                                         file_name="Form_Processing_MIS_Report.pdf",
