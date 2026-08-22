@@ -484,6 +484,35 @@ def inject_css():
             border-right: 1px solid rgba(255,255,255,0.6);
         }}
         section[data-testid="stSidebar"] * {{ color: {BRAND_TEXT} !important; }}
+
+        /* Multiselect selected-value "tags" -- restyle away from the
+           default solid, saturated blue pill (which clashes with the rest
+           of the light glassy design) to a soft tinted pill that matches
+           the brand palette. */
+        [data-testid="stMultiSelectTagsContainer"] span[data-tag] {{
+            background-color: rgba(11,61,145,0.12) !important;
+            border: 1px solid rgba(11,61,145,0.35) !important;
+            border-radius: 999px !important;
+            color: {BRAND_PRIMARY} !important;
+        }}
+        [data-testid="stMultiSelectTagsContainer"] span[data-tag] * {{
+            color: {BRAND_PRIMARY} !important;
+        }}
+        [data-testid="stMultiSelectTagsContainer"] span[data-tag] svg {{
+            stroke: {BRAND_PRIMARY} !important;
+        }}
+        [data-testid="stMultiSelectTagsContainer"] span[data-tag] button:hover {{
+            background: rgba(11,61,145,0.22) !important; border-radius: 999px;
+        }}
+
+        /* Consistent gap between st.columns cards no matter how many columns
+           are in the row (fixes KPI cards looking "stuck together"). */
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"] {{
+            padding: 0 0.5rem;
+        }}
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:first-child {{ padding-left: 0; }}
+        div[data-testid="stHorizontalBlock"] > div[data-testid="column"]:last-child {{ padding-right: 0; }}
+        div[data-testid="stHorizontalBlock"] {{ margin-bottom: 0.9rem; }}
         /* NOTE: scoped to actual form-widget labels only (not a blanket
            p/span/li rule) -- an earlier, broader version of this rule also
            matched text inside .mis-header and turned the banner's own white
@@ -513,13 +542,17 @@ def inject_css():
             color: #ffffff !important; font-weight: 600;
         }}
 
-        /* Glassmorphism: translucent, blurred, soft-bordered cards */
+        /* Glassmorphism: translucent, blurred, soft-bordered cards. Each card
+           also gets an inline colour accent (left border + tint wash, set
+           per-card in kpi_card()) so the row reads as distinct, colourful
+           tiles rather than one flat block. */
         .kpi-card {{
-            background: rgba(255,255,255,0.55);
+            background-color: rgba(255,255,255,0.6);
             backdrop-filter: blur(12px) saturate(160%);
             -webkit-backdrop-filter: blur(12px) saturate(160%);
             border-radius: 16px; padding: 1rem 1.1rem;
             border: 1px solid rgba(255,255,255,0.65);
+            border-left-width: 5px; border-left-style: solid;
             box-shadow: 0 8px 22px rgba(20,30,60,0.08);
             height: 100%; transition: transform .15s ease, box-shadow .15s ease;
         }}
@@ -597,11 +630,19 @@ def inject_css():
     """, unsafe_allow_html=True)
 
 
+def _hex_to_rgba(hex_color: str, alpha: float) -> str:
+    hex_color = hex_color.lstrip("#")
+    r, g, b = (int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r},{g},{b},{alpha})"
+
+
 def kpi_card(col, label, value, sub=None, color=BRAND_PRIMARY):
     with col:
+        tint = _hex_to_rgba(color, 0.12)
         sub_html = f'<div class="kpi-sub" style="color:{color}">{sub}</div>' if sub else ""
         st.markdown(f"""
-        <div class="kpi-card">
+        <div class="kpi-card" style="border-left-color:{color};
+             background-image: linear-gradient(135deg, {tint} 0%, rgba(255,255,255,0) 70%);">
             <div class="kpi-label">{label}</div>
             <div class="kpi-value">{value}</div>
             {sub_html}
@@ -1015,7 +1056,7 @@ with tab1:
             hearing_sched = filtered["Hearing_Scheduled"].sum()
 
             section_title("Key Performance Indicators")
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4 = st.columns(4, gap="medium")
             kpi_card(c1, "Total Forms Received", fmt_int(total_received),
                      f"{filtered['AC_No'].nunique()} ACs · {filtered['Form_Type'].nunique()} form types")
             kpi_card(c2, "Unprocessed", fmt_int(unprocessed),
@@ -1025,7 +1066,7 @@ with tab1:
             kpi_card(c4, "Eroll Inclusion", fmt_int(eroll_inclusion),
                      f"{fmt_pct(safe_div(eroll_inclusion, total_received))} inclusion rate", color=BRAND_ACCENT)
 
-            c5, c6, c7 = st.columns(3)
+            c5, c6, c7 = st.columns(3, gap="medium")
             kpi_card(c5, "Rejected", fmt_int(rejected),
                      f"{fmt_pct(safe_div(rejected, total_received))} rejection rate", color=BRAND_DANGER)
             kpi_card(c6, "Accepted", fmt_int(accepted),
@@ -1244,7 +1285,7 @@ with tab2:
             ineligible = nh_filtered["Ineligible_Final"].sum()
 
             section_title("Key Performance Indicators")
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4 = st.columns(4, gap="medium")
             kpi_card(c1, "Notices Generated", fmt_int(notice_gen),
                      f"{nh_filtered['AC_No'].nunique()} ACs · {fmt_int(len(nh_filtered))} parts")
             kpi_card(c2, "Notices Delivered", fmt_int(notice_del),
@@ -1254,7 +1295,7 @@ with tab2:
             kpi_card(c4, "Hearings Held", fmt_int(hearings_held),
                      f"{fmt_pct(safe_div(hearings_held, notice_del))} of delivered notices")
 
-            c5, c6, c7 = st.columns(3)
+            c5, c6, c7 = st.columns(3, gap="medium")
             kpi_card(c5, "DEO Pending", fmt_int(deo_pending),
                      f"{fmt_pct(safe_div(deo_pending, notice_gen))} of notices generated", color=BRAND_DANGER)
             kpi_card(c6, "DEO Pending > 5 Days", fmt_int(deo_pending_gt5),
