@@ -1784,14 +1784,6 @@ else:
     elif fp_old_df is None or fp_old_df.empty:
         st.warning("1513.xlsx loaded but contains no usable data rows.")
     else:
-        new_dist_full = fp_district_report(fp_df)
-        old_dist_full = fp_district_report(fp_old_df)
-        diff_dist_full = fp_diff_report(new_dist_full, old_dist_full, ["District"])
-
-        new_ac_full = fp_ac_report(fp_df)
-        old_ac_full = fp_ac_report(fp_old_df)
-        diff_ac_full = fp_diff_report(new_ac_full, old_ac_full, ["District", "AC_No", "AC_Name"])
-
         st.markdown(f"""<div class="note-box">
             <b>Comparing:</b> Form_Processing.xlsx (period: {fp_meta.get('report_period') or 'N/A'})
             <b>minus</b> comparison workbook 1513.xlsx (period: {fp_old_meta.get('report_period') or 'N/A'}).
@@ -1801,24 +1793,43 @@ else:
 
         with st.sidebar:
             st.markdown("#### \U0001F4CA Difference Report Filters")
-            diff_districts = sorted(diff_dist_full["District"].unique())
+            diff_districts = sorted(set(fp_df["District"].unique()) | set(fp_old_df["District"].unique()))
             diff_sel_districts = st.multiselect("District", diff_districts, default=[], key="diff_dist")
-            diff_scope = (diff_ac_full[diff_ac_full["District"].isin(diff_sel_districts)]
-                          if diff_sel_districts else diff_ac_full)
-            diff_acs = sorted(diff_scope["AC_Name"].unique())
+            diff_ac_scope_src = pd.concat([fp_df, fp_old_df])
+            if diff_sel_districts:
+                diff_ac_scope_src = diff_ac_scope_src[diff_ac_scope_src["District"].isin(diff_sel_districts)]
+            diff_acs = sorted(diff_ac_scope_src["AC_Name"].unique())
             diff_sel_acs = st.multiselect("Assembly Constituency (AC)", diff_acs, default=[], key="diff_ac")
+            diff_form_types = sorted(set(fp_df["Form_Type"].unique()) | set(fp_old_df["Form_Type"].unique()))
+            diff_sel_forms = st.multiselect(
+                "Form Type", diff_form_types,
+                format_func=lambda x: FORM_TYPE_LABELS.get(x, x), default=[], key="diff_form")
 
-        diff_dist_view = (diff_dist_full[diff_dist_full["District"].isin(diff_sel_districts)]
-                           if diff_sel_districts else diff_dist_full)
-        diff_ac_view = diff_ac_full
+        # Apply District/AC/Form Type filters to the row-level data BEFORE
+        # aggregating -- the diff reports sum across every matching row, so
+        # filtering has to happen here, not after fp_district_report()/
+        # fp_ac_report() have already summed Form Type away.
+        fp_scope = fp_df.copy()
+        fp_old_scope = fp_old_df.copy()
         if diff_sel_districts:
-            diff_ac_view = diff_ac_view[diff_ac_view["District"].isin(diff_sel_districts)]
+            fp_scope = fp_scope[fp_scope["District"].isin(diff_sel_districts)]
+            fp_old_scope = fp_old_scope[fp_old_scope["District"].isin(diff_sel_districts)]
         if diff_sel_acs:
-            diff_ac_view = diff_ac_view[diff_ac_view["AC_Name"].isin(diff_sel_acs)]
+            fp_scope = fp_scope[fp_scope["AC_Name"].isin(diff_sel_acs)]
+            fp_old_scope = fp_old_scope[fp_old_scope["AC_Name"].isin(diff_sel_acs)]
+        if diff_sel_forms:
+            fp_scope = fp_scope[fp_scope["Form_Type"].isin(diff_sel_forms)]
+            fp_old_scope = fp_old_scope[fp_old_scope["Form_Type"].isin(diff_sel_forms)]
+
+        diff_dist_view = fp_diff_report(fp_district_report(fp_scope), fp_district_report(fp_old_scope),
+                                         ["District"])
+        diff_ac_view = fp_diff_report(fp_ac_report(fp_scope), fp_ac_report(fp_old_scope),
+                                       ["District", "AC_No", "AC_Name"])
 
         diff_filt_parts = []
         if diff_sel_districts: diff_filt_parts.append("District: " + ", ".join(diff_sel_districts))
         if diff_sel_acs: diff_filt_parts.append("AC: " + ", ".join(diff_sel_acs))
+        if diff_sel_forms: diff_filt_parts.append(", ".join(FORM_TYPE_SHORT.get(f, f) for f in diff_sel_forms))
         diff_filters_desc = " | ".join(diff_filt_parts)
 
         if diff_dist_view.empty:
@@ -1897,7 +1908,7 @@ else:
             dcol1, dcol2 = st.columns(2)
             with dcol1:
                 diff_excel = build_excel_download({
-                    "District Report": diff_dist_full, "AC Report": diff_ac_full,
+                    "District Report": diff_dist_view, "AC Report": diff_ac_view,
                 })
                 st.download_button("\U0001F4E5 Download Difference Report (Excel)", diff_excel,
                                     file_name="Form_Processing_Difference_Report.xlsx",
@@ -1923,7 +1934,7 @@ else:
             st.caption("District-wise and AC-wise reports on their own, in Excel or PDF:")
             dcol3, dcol4, dcol5, dcol6 = st.columns(4)
             with dcol3:
-                diff_dist_excel = build_excel_download({"District Report": diff_dist_full})
+                diff_dist_excel = build_excel_download({"District Report": diff_dist_view})
                 st.download_button("\U0001F4E5 District-wise (Excel)", diff_dist_excel,
                                     file_name="Form_Processing_Difference_District_Report.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1944,7 +1955,7 @@ else:
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"PDF generation failed: {exc}")
             with dcol5:
-                diff_ac_excel = build_excel_download({"AC Report": diff_ac_full})
+                diff_ac_excel = build_excel_download({"AC Report": diff_ac_view})
                 st.download_button("\U0001F4E5 AC-wise (Excel)", diff_ac_excel,
                                     file_name="Form_Processing_Difference_AC_Report.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
