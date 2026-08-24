@@ -244,17 +244,20 @@ FP_COL_FORMATS.update({
 })
 
 # --------------------------------------------------------------------------
-# Difference Report: same columns as the Form Processing District-wise
-# report, but the *values* are District-wise deltas between Form_Processing.
-# xlsx (current period) and the comparison workbook (an earlier cutoff,
-# District-level only -- no AC breakdown exists for it). District is the
-# only granularity available for a diff, since the comparison file has no
-# AC No./AC Name columns of its own.
+# Difference Report: same columns as the Form Processing District-wise/
+# AC-wise reports, but the *values* are deltas between Form_Processing.xlsx
+# (current period) and the comparison workbook (an earlier cutoff) -- both
+# now AC-level workbooks with identical layout, so the diff is available at
+# both District-wise and AC-wise granularity.
 # --------------------------------------------------------------------------
 DIFF_DIST_BASE_COLS = ["District", "Total_Received", "Hearing_Scheduled",
                         "Rejected", "Accepted", "Eroll_Inclusion"]
 DIFF_DIST_EXTRA_COLS = ([c for c in FP_STATUS_COLS if c not in DIFF_DIST_BASE_COLS]
                          + ["In_Progress", "Inclusion_Rate_%"])
+DIFF_AC_BASE_COLS = ["District", "AC_No", "AC_Name", "Total_Received",
+                      "Hearing_Scheduled", "Rejected", "Accepted", "Eroll_Inclusion"]
+DIFF_AC_EXTRA_COLS = ([c for c in FP_STATUS_COLS if c not in DIFF_AC_BASE_COLS]
+                       + ["In_Progress", "Inclusion_Rate_%"])
 DIFF_COL_LABELS = {"Inclusion_Rate_%": "Inclusion Rate % (change, points)",
                     "In_Progress": "In Progress (change)"}
 # "{:+,.0f}" / "{:+.1f}%" (note the "+") so a positive change reads as
@@ -482,66 +485,6 @@ def load_form_processing(path: str, ac_district_map: dict):
     return df, meta, None
 
 
-@st.cache_data(show_spinner=False)
-def load_form_processing_district(path: str):
-    """Load a Form-Processing-style workbook that is keyed by District
-    instead of AC (same header/column layout as Form_Processing.xlsx, just
-    with 'District No.'/'District Name' identifier columns) -- this is the
-    comparison workbook that backs the Difference Report."""
-    try:
-        raw_head = pd.read_excel(path, sheet_name=0, header=None, nrows=6)
-    except FileNotFoundError:
-        return None, None, f"File not found: {path}"
-    except Exception as exc:  # noqa: BLE001
-        return None, None, f"Could not read {path}: {exc}"
-
-    header_row_idx = None
-    for i in range(min(10, len(raw_head))):
-        first_cell = clean_str(raw_head.iloc[i, 0])
-        if first_cell.lower().startswith("district no"):
-            header_row_idx = i
-            break
-    if header_row_idx is None:
-        header_row_idx = 4  # fallback to the position observed in the source file
-
-    meta_lines = [clean_str(raw_head.iloc[i, 0]) for i in range(header_row_idx)]
-    period_match = re.search(r"From\s*-\s*([\d/]+)\s*To\s*-\s*([\d/]+)",
-                              " ".join(meta_lines))
-    report_period = (f"{period_match.group(1)} to {period_match.group(2)}"
-                      if period_match else None)
-    scope_line = next((m for m in meta_lines if ">>" in m), None)
-
-    raw = pd.read_excel(path, sheet_name=0, header=header_row_idx)
-    raw.columns = [clean_str(c) for c in raw.columns]
-
-    required = ["District No.", "District Name", "Form Type", "Total Form Received"] + FP_STATUS_COLS_RAW
-    missing = [c for c in required if c not in raw.columns]
-    if missing:
-        return None, None, ("Comparison workbook is missing expected column(s): "
-                             + ", ".join(missing))
-
-    # Keep only genuine data rows: District No. must be numeric. This is how
-    # "District Form Total" / "All District Form-X Total" / "All District
-    # Form Total" subtotal and grand-total rows are excluded.
-    dist_no_numeric = pd.to_numeric(raw["District No."], errors="coerce")
-    df = raw[dist_no_numeric.notna()].copy()
-    df["District Name"] = df["District Name"].apply(clean_str)
-    df["Form Type"] = df["Form Type"].apply(clean_str)
-    df = df[(df["Form Type"] != "") & (df["Form Type"] != "nan")].copy()
-
-    value_cols = ["Total Form Received"] + FP_STATUS_COLS_RAW
-    for c in value_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
-
-    rename_map = {"District Name": "District", "Total Form Received": "Total_Received",
-                  "Form Type": "Form_Type"}
-    rename_map.update(FP_RAW_TO_CLEAN)
-    df = df.rename(columns=rename_map)
-
-    meta = {"report_period": report_period, "scope": scope_line}
-    return df, meta, None
-
-
 # --------------------------------------------------------------------------
 # Aggregation helpers
 # --------------------------------------------------------------------------
@@ -573,44 +516,35 @@ def fp_ac_report(df: pd.DataFrame) -> pd.DataFrame:
              .drop(columns="_dist_total"))
 
 
-def fp_district_report_flat(df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate a District x Form_Type dataframe (already at district
-    granularity -- no AC No./AC Name of its own, e.g. the comparison
-    workbook behind the Difference Report) up to one row per district. Same
-    shape as fp_district_report()'s output, minus ACs_Reporting (there's no
-    AC-level data to count)."""
-    if df.empty:
-        return df
-    agg_kwargs = {"Total_Received": ("Total_Received", "sum")}
-    agg_kwargs.update({c: (c, "sum") for c in FP_STATUS_COLS})
-    g = df.groupby("District", as_index=False).agg(**agg_kwargs)
-    g["In_Progress"] = g[FP_INPROGRESS_COLS].sum(axis=1)
-    g["Inclusion_Rate_%"] = g.apply(lambda r: safe_div(r["Eroll_Inclusion"], r["Total_Received"]), axis=1)
-    return g.sort_values("Total_Received", ascending=False)
-
-
-def fp_diff_report(new_dist: pd.DataFrame, old_dist: pd.DataFrame) -> pd.DataFrame:
-    """District-wise difference: new period minus old/comparison period,
-    same columns as the Form Processing District-wise report (Total_Received
-    + every real status column, plus the derived In_Progress/Inclusion_Rate_%
-    for reference). A district present in only one side is still included,
-    treating its missing side as zero, so nothing silently drops out."""
+def fp_diff_report(new_rep: pd.DataFrame, old_rep: pd.DataFrame, key_cols: list) -> pd.DataFrame:
+    """Difference report: new_rep minus old_rep, aligned on key_cols (e.g.
+    ["District"] for a District-wise diff, ["District", "AC_No", "AC_Name"]
+    for an AC-wise diff). new_rep/old_rep are expected to already be the
+    output of fp_district_report()/fp_ac_report() (or empty/None). Same
+    value columns as those reports (Total_Received + every real status
+    column, plus the derived In_Progress/Inclusion_Rate_% for reference;
+    ACs_Reporting is excluded -- a diff of "how many distinct ACs reported"
+    isn't a meaningful number). A row (district or AC) present on only one
+    side is still included, with the missing side treated as zero, so
+    nothing silently drops out of the diff."""
     diff_cols = ["Total_Received"] + FP_STATUS_COLS + ["In_Progress", "Inclusion_Rate_%"]
-    if new_dist is None or new_dist.empty:
-        new_dist = pd.DataFrame(columns=["District"] + diff_cols)
-    if old_dist is None or old_dist.empty:
-        old_dist = pd.DataFrame(columns=["District"] + diff_cols)
+    if new_rep is None or new_rep.empty:
+        new_rep = pd.DataFrame(columns=key_cols + diff_cols)
+    if old_rep is None or old_rep.empty:
+        old_rep = pd.DataFrame(columns=key_cols + diff_cols)
 
-    all_districts = sorted(set(new_dist["District"]) | set(old_dist["District"]))
-    n = new_dist.set_index("District").reindex(all_districts, fill_value=0)
-    o = old_dist.set_index("District").reindex(all_districts, fill_value=0)
+    n = new_rep.set_index(key_cols)
+    o = old_rep.set_index(key_cols)
+    all_keys = n.index.union(o.index)
+    n = n.reindex(all_keys, fill_value=0)
+    o = o.reindex(all_keys, fill_value=0)
 
-    diff = pd.DataFrame(index=all_districts)
+    diff = pd.DataFrame(index=all_keys)
     for c in diff_cols:
         n_col = n[c] if c in n.columns else 0
         o_col = o[c] if c in o.columns else 0
         diff[c] = n_col - o_col
-    diff = diff.reset_index().rename(columns={"index": "District"})
+    diff = diff.reset_index()
     return diff.sort_values("Total_Received", ascending=False)
 
 
@@ -1312,7 +1246,7 @@ st.markdown(f"""
 nh_df, nh_meta, nh_err = load_notice_data(NOTICE_FILE, ELECTORS_FILE)
 ac_map = build_ac_district_map(nh_df) if nh_df is not None else {}
 fp_df, fp_meta, fp_err = load_form_processing(FORM_PROCESSING_FILE, ac_map)
-fp_old_df, fp_old_meta, fp_old_err = load_form_processing_district(FORM_PROCESSING_OLD_FILE)
+fp_old_df, fp_old_meta, fp_old_err = load_form_processing(FORM_PROCESSING_OLD_FILE, ac_map)
 
 with st.sidebar:
     st.markdown("### \U0001F4CB Dashboard Controls")
@@ -1851,44 +1785,57 @@ else:
         st.warning("1513.xlsx loaded but contains no usable data rows.")
     else:
         new_dist_full = fp_district_report(fp_df)
-        old_dist_full = fp_district_report_flat(fp_old_df)
-        diff_dist_full = fp_diff_report(new_dist_full, old_dist_full)
+        old_dist_full = fp_district_report(fp_old_df)
+        diff_dist_full = fp_diff_report(new_dist_full, old_dist_full, ["District"])
+
+        new_ac_full = fp_ac_report(fp_df)
+        old_ac_full = fp_ac_report(fp_old_df)
+        diff_ac_full = fp_diff_report(new_ac_full, old_ac_full, ["District", "AC_No", "AC_Name"])
 
         st.markdown(f"""<div class="note-box">
             <b>Comparing:</b> Form_Processing.xlsx (period: {fp_meta.get('report_period') or 'N/A'})
             <b>minus</b> comparison workbook 1513.xlsx (period: {fp_old_meta.get('report_period') or 'N/A'}).
-            <br><span style="color:{BRAND_MUTED}">Same columns as the Form Processing District-wise report --
-            every value here is the District-wise change between the two report periods. District-level
-            only: the comparison workbook has no AC-level breakdown to diff against.</span>
+            <br><span style="color:{BRAND_MUTED}">Same columns as the Form Processing District-wise/AC-wise
+            reports -- every value here is the change between the two report periods (District or AC).</span>
             </div>""", unsafe_allow_html=True)
 
         with st.sidebar:
             st.markdown("#### \U0001F4CA Difference Report Filters")
             diff_districts = sorted(diff_dist_full["District"].unique())
             diff_sel_districts = st.multiselect("District", diff_districts, default=[], key="diff_dist")
+            diff_scope = (diff_ac_full[diff_ac_full["District"].isin(diff_sel_districts)]
+                          if diff_sel_districts else diff_ac_full)
+            diff_acs = sorted(diff_scope["AC_Name"].unique())
+            diff_sel_acs = st.multiselect("Assembly Constituency (AC)", diff_acs, default=[], key="diff_ac")
 
-        diff_view = (diff_dist_full[diff_dist_full["District"].isin(diff_sel_districts)]
-                     if diff_sel_districts else diff_dist_full)
+        diff_dist_view = (diff_dist_full[diff_dist_full["District"].isin(diff_sel_districts)]
+                           if diff_sel_districts else diff_dist_full)
+        diff_ac_view = diff_ac_full
+        if diff_sel_districts:
+            diff_ac_view = diff_ac_view[diff_ac_view["District"].isin(diff_sel_districts)]
+        if diff_sel_acs:
+            diff_ac_view = diff_ac_view[diff_ac_view["AC_Name"].isin(diff_sel_acs)]
 
         diff_filt_parts = []
         if diff_sel_districts: diff_filt_parts.append("District: " + ", ".join(diff_sel_districts))
+        if diff_sel_acs: diff_filt_parts.append("AC: " + ", ".join(diff_sel_acs))
         diff_filters_desc = " | ".join(diff_filt_parts)
 
-        if diff_view.empty:
+        if diff_dist_view.empty:
             no_data_message()
         else:
-            total_diff = diff_view["Total_Received"].sum()
-            hearing_diff = diff_view["Hearing_Scheduled"].sum()
-            rejected_diff = diff_view["Rejected"].sum()
-            accepted_diff = diff_view["Accepted"].sum()
-            eroll_diff = diff_view["Eroll_Inclusion"].sum()
-            unprocessed_diff = diff_view["Unprocessed"].sum()
-            inprogress_diff = diff_view["In_Progress"].sum()
+            total_diff = diff_dist_view["Total_Received"].sum()
+            hearing_diff = diff_dist_view["Hearing_Scheduled"].sum()
+            rejected_diff = diff_dist_view["Rejected"].sum()
+            accepted_diff = diff_dist_view["Accepted"].sum()
+            eroll_diff = diff_dist_view["Eroll_Inclusion"].sum()
+            unprocessed_diff = diff_dist_view["Unprocessed"].sum()
+            inprogress_diff = diff_dist_view["In_Progress"].sum()
 
             section_title("Key Performance Indicators")
             c1, c2, c3, c4 = st.columns(4, gap="medium")
             kpi_card(c1, "Total Forms Received (Δ)", fmt_diff(total_diff),
-                     f"{diff_view['District'].nunique()} districts in scope")
+                     f"{diff_dist_view['District'].nunique()} districts in scope")
             kpi_card(c2, "Hearing Scheduled (Δ)", fmt_diff(hearing_diff), color=BRAND_WARN)
             kpi_card(c3, "Rejected (Δ)", fmt_diff(rejected_diff), color=BRAND_DANGER)
             kpi_card(c4, "Accepted (Δ)", fmt_diff(accepted_diff))
@@ -1900,26 +1847,48 @@ else:
 
             st.caption(
                 "ℹ️ Every KPI and column here is (Form_Processing.xlsx value) minus "
-                "(1513.xlsx value) for the same District -- a positive number means that column grew "
+                "(1513.xlsx value) for the same District/AC -- a positive number means that column grew "
                 "between the two report periods, negative means it shrank."
             )
 
+            # ------------------ District-wise diff report ------------------
             section_title("District-wise Difference Report")
-            diff_sort_options = DIFF_DIST_BASE_COLS[1:] + DIFF_DIST_EXTRA_COLS
-            diff_sort_opt = st.selectbox(
-                "Sort district report by", diff_sort_options, index=0, key="diff_dist_sort",
+            diff_dist_sort_options = DIFF_DIST_BASE_COLS[1:] + DIFF_DIST_EXTRA_COLS
+            diff_dist_sort_opt = st.selectbox(
+                "Sort district report by", diff_dist_sort_options, index=0, key="diff_dist_sort",
                 format_func=lambda c: DIFF_COL_LABELS.get(c, c.replace("_", " ")),
             )
-            diff_sorted = diff_view.sort_values(diff_sort_opt, ascending=False)
-            diff_extra_pick = st.multiselect(
+            diff_dist_sorted = diff_dist_view.sort_values(diff_dist_sort_opt, ascending=False)
+            diff_dist_extra_pick = st.multiselect(
                 "Add more columns (optional) -- every column below is exactly as named in Form_Processing.xlsx",
                 DIFF_DIST_EXTRA_COLS, default=[], key="diff_dist_extra_cols",
                 format_func=lambda c: DIFF_COL_LABELS.get(c, c.replace("_", " ")),
             )
             render_html_table(
-                diff_sorted, DIFF_DIST_BASE_COLS + diff_extra_pick,
+                diff_dist_sorted, DIFF_DIST_BASE_COLS + diff_dist_extra_pick,
                 formats=DIFF_COL_FORMATS, labels=DIFF_COL_LABELS,
                 caption="Values are District-wise differences (Form_Processing.xlsx minus 1513.xlsx), "
+                        "not absolute counts. Full column set is in the Excel/PDF export below.",
+            )
+
+            # ------------------ AC-wise diff report ------------------
+            section_title("AC-wise Difference Report")
+            diff_ac_dist_pick = st.selectbox(
+                "Select District to drill into its ACs (optional)",
+                ["All Districts"] + sorted(diff_ac_view["District"].unique()),
+                key="diff_ac_district_pick",
+            )
+            diff_ac_scope = (diff_ac_view if diff_ac_dist_pick == "All Districts"
+                              else diff_ac_view[diff_ac_view["District"] == diff_ac_dist_pick])
+            diff_ac_extra_pick = st.multiselect(
+                "Add more columns (optional) -- every column below is exactly as named in Form_Processing.xlsx",
+                DIFF_AC_EXTRA_COLS, default=[], key="diff_ac_extra_cols",
+                format_func=lambda c: DIFF_COL_LABELS.get(c, c.replace("_", " ")),
+            )
+            render_html_table(
+                diff_ac_scope, DIFF_AC_BASE_COLS + diff_ac_extra_pick,
+                formats=DIFF_COL_FORMATS, labels=DIFF_COL_LABELS,
+                caption="Values are AC-wise differences (Form_Processing.xlsx minus 1513.xlsx), "
                         "not absolute counts. Full column set is in the Excel/PDF export below.",
             )
 
@@ -1927,7 +1896,9 @@ else:
             section_title("Downloads")
             dcol1, dcol2 = st.columns(2)
             with dcol1:
-                diff_excel = build_excel_download({"Difference Report": diff_dist_full})
+                diff_excel = build_excel_download({
+                    "District Report": diff_dist_full, "AC Report": diff_ac_full,
+                })
                 st.download_button("\U0001F4E5 Download Difference Report (Excel)", diff_excel,
                                     file_name="Form_Processing_Difference_Report.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1939,12 +1910,58 @@ else:
                         subtitle=(f"Change: {fp_old_meta.get('report_period') or 'N/A'}  "
                                   f"vs  {fp_meta.get('report_period') or 'N/A'}"),
                         filters_desc=diff_filters_desc, kpis=None,
-                        district_df=diff_sorted, ac_df=None, charts=[],
-                        district_cols=DIFF_DIST_BASE_COLS, col_labels=DIFF_COL_LABELS,
+                        district_df=diff_dist_sorted, ac_df=diff_ac_scope, charts=[],
+                        district_cols=DIFF_DIST_BASE_COLS, ac_cols=DIFF_AC_BASE_COLS,
+                        col_labels=DIFF_COL_LABELS,
                     )
-                    st.download_button("\U0001F4C4 Download Difference Report (PDF)", diff_pdf_bytes,
+                    st.download_button("\U0001F4C4 Download PDF Report (full)", diff_pdf_bytes,
                                         file_name="Form_Processing_Difference_Report.pdf",
                                         mime="application/pdf", use_container_width=True, key="diff_dl_pdf")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"PDF generation failed: {exc}")
+
+            st.caption("District-wise and AC-wise reports on their own, in Excel or PDF:")
+            dcol3, dcol4, dcol5, dcol6 = st.columns(4)
+            with dcol3:
+                diff_dist_excel = build_excel_download({"District Report": diff_dist_full})
+                st.download_button("\U0001F4E5 District-wise (Excel)", diff_dist_excel,
+                                    file_name="Form_Processing_Difference_District_Report.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True, key="diff_dl_dist_xlsx")
+            with dcol4:
+                try:
+                    diff_dist_pdf_bytes = build_pdf_report(
+                        title="Form Processing - Difference Report (District-wise)",
+                        subtitle=(f"Change: {fp_old_meta.get('report_period') or 'N/A'}  "
+                                  f"vs  {fp_meta.get('report_period') or 'N/A'}"),
+                        filters_desc=diff_filters_desc, kpis=None,
+                        district_df=diff_dist_sorted, ac_df=None, charts=[],
+                        district_cols=DIFF_DIST_BASE_COLS, col_labels=DIFF_COL_LABELS,
+                    )
+                    st.download_button("\U0001F4C4 District-wise (PDF)", diff_dist_pdf_bytes,
+                                        file_name="Form_Processing_Difference_District_Report.pdf",
+                                        mime="application/pdf", use_container_width=True, key="diff_dl_dist_pdf")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"PDF generation failed: {exc}")
+            with dcol5:
+                diff_ac_excel = build_excel_download({"AC Report": diff_ac_full})
+                st.download_button("\U0001F4E5 AC-wise (Excel)", diff_ac_excel,
+                                    file_name="Form_Processing_Difference_AC_Report.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True, key="diff_dl_ac_xlsx")
+            with dcol6:
+                try:
+                    diff_ac_pdf_bytes = build_pdf_report(
+                        title="Form Processing - Difference Report (AC-wise)",
+                        subtitle=(f"Change: {fp_old_meta.get('report_period') or 'N/A'}  "
+                                  f"vs  {fp_meta.get('report_period') or 'N/A'}"),
+                        filters_desc=diff_filters_desc, kpis=None,
+                        district_df=None, ac_df=diff_ac_scope, charts=[],
+                        ac_cols=DIFF_AC_BASE_COLS, col_labels=DIFF_COL_LABELS,
+                    )
+                    st.download_button("\U0001F4C4 AC-wise (PDF)", diff_ac_pdf_bytes,
+                                        file_name="Form_Processing_Difference_AC_Report.pdf",
+                                        mime="application/pdf", use_container_width=True, key="diff_dl_ac_pdf")
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"PDF generation failed: {exc}")
 
