@@ -94,7 +94,8 @@ warnings.filterwarnings("ignore")
 # --------------------------------------------------------------------------
 _APP_DIR = os.path.dirname(os.path.abspath(__file__))
 FORM_PROCESSING_FILE = os.path.join(_APP_DIR, "Form_Processing.xlsx")
-NOTICE_HEARING_FILE = os.path.join(_APP_DIR, "Notice_Hearing.xlsx")
+NOTICE_FILE = os.path.join(_APP_DIR, "Notice.xlsx")
+ELECTORS_FILE = os.path.join(_APP_DIR, "Electors.xlsx")
 
 BRAND_PRIMARY = "#0B3D91"
 BRAND_PRIMARY_DARK = "#082B66"
@@ -122,10 +123,38 @@ SHOW_CHARTS = False
 # (*_display_cols, defined next to each report below) are still used for the
 # Excel/PDF exports, so no data is lost -- only the on-screen table is leaner.
 # --------------------------------------------------------------------------
-NH_DIST_SCREEN_COLS = ["District", "Notice_Generated", "Notice_Delivered",
-                        "DEO_Total_Pending", "DEO_Pending_GT5"]
-NH_AC_SCREEN_COLS = ["District", "AC_Name", "Notice_Generated", "Notice_Delivered",
-                      "DEO_Total_Pending", "DEO_Pending_GT5"]
+# Notice & Hearing report: exactly the column set the user specified (built
+# from Notice.xlsx + Electors.xlsx), used as-is on screen, in Excel, and in
+# PDF -- no separate "trimmed for screen" vs "full" column set here, unlike
+# Form Processing below, since this set already IS the intended default.
+NOTICE_DIST_COLS = ["District", "Electors", "Notice_Delivered", "Hearing_Held",
+                     "Hearing_Date_Lapsed", "Lapsed_%", "DEO_Total_Pending",
+                     "Ineligible_Final", "Parked_Notices_Generated", "Parked_Others",
+                     "Parked_Final_%"]
+NOTICE_AC_COLS = ["District", "AC_No", "AC_Name", "Electors", "Notice_Delivered",
+                   "Hearing_Held", "Hearing_Date_Lapsed", "Lapsed_%", "DEO_Total_Pending",
+                   "Ineligible_Final", "Parked_Notices_Generated", "Parked_Others",
+                   "Parked_Final_%"]
+# Header text for columns whose plain "replace underscore with space" label
+# wouldn't match the exact wording the report is meant to use.
+NOTICE_COL_LABELS = {
+    "Notice_Delivered": "Notice Delivered",
+    "Hearing_Held": "Hearing Held",
+    "Hearing_Date_Lapsed": "Hearing Date Lapsed",
+    "Lapsed_%": "% Lapsed",
+    "DEO_Total_Pending": "Total pending Text (DEO)",
+    "Ineligible_Final": "Found Ineligible for Final (ERO)",
+    "Parked_Notices_Generated": "Parked for Final Publication w.r.t. Notices Generated",
+    "Parked_Others": "Parked For Final Publication w.r.t. Others",
+    "Parked_Final_%": "% Parked for Final",
+}
+NOTICE_COL_FORMATS = {
+    "Electors": "{:,.0f}", "Notice_Delivered": "{:,.0f}", "Hearing_Held": "{:,.0f}",
+    "Hearing_Date_Lapsed": "{:,.0f}", "Lapsed_%": "{:.2f}",
+    "DEO_Total_Pending": "{:,.0f}", "Ineligible_Final": "{:,.0f}",
+    "Parked_Notices_Generated": "{:,.0f}", "Parked_Others": "{:,.0f}",
+    "Parked_Final_%": "{:.2f}",
+}
 # Form Processing's screen columns are defined further below, right after
 # FP_STATUS_COLS -- they're built from that list (every raw status column
 # from the sheet), so they can't be defined before it exists.
@@ -247,63 +276,102 @@ def clean_str(x) -> str:
 # --------------------------------------------------------------------------
 # Data loading (cached)
 # --------------------------------------------------------------------------
+# Notice.xlsx has a two-row merged column header (row 2 = category like
+# "DEO Status", row 3 = the actual sub-column like "Total Pending") over 20
+# columns (A-T, the last blank) -- rather than fragile merged-cell text
+# matching, the columns are given clean names here in their fixed left-to-
+# right order, the same pragmatic approach FP_STATUS_COLS_RAW uses above.
+NOTICE_RAW_COLS = [
+    "S_No", "AC_Combo", "Notice_Generated", "Pending_Notice_Generation", "Notice_Delivered",
+    "Notice_Pending_Delivery", "Hearing_Held", "Hearing_Date_Lapsed", "Reschedule_Date_Lapsed",
+    "DEO_Total_Pending", "DEO_Pending_GT5", "DEO_Verified", "DEO_Not_Verified",
+    "Ineligible_Final", "Parked_Notices_Generated", "Parked_Others",
+    "Electors_DSE_UP", "Form7_Generated", "No_Action_Required", "Blank_Col",
+]
+
+
 @st.cache_data(show_spinner=False)
-def load_notice_hearing(path: str):
-    """Load and clean Notice_Hearing.xlsx (sheet: sirNoticeGenerate)."""
+def load_notice_data(notice_path: str, electors_path: str):
+    """Load Notice.xlsx (AC-level notice/hearing/DEO/ERO counts) and
+    Electors.xlsx (AC-level elector totals + District mapping), and merge
+    them on AC No. into one AC-level dataframe -- this replaces the old
+    Part-level Notice_Hearing.xlsx as the data source for the Notice &
+    Hearing tab.
+
+    Both files have a 3-row header block (title / scope / column header --
+    Notice.xlsx's header is split across two merged rows) followed by one
+    data row per AC and a trailing "Total" row; the Total row is dropped
+    here since every total in this app is recomputed from the row-level
+    data rather than trusted from the sheet.
+    """
     try:
-        raw = pd.read_excel(path, sheet_name=0, header=0)
+        notice_raw = pd.read_excel(notice_path, sheet_name=0, header=None)
     except FileNotFoundError:
-        return None, f"File not found: {path}"
+        return None, None, f"File not found: {notice_path}"
     except Exception as exc:  # noqa: BLE001
-        return None, f"Could not read {path}: {exc}"
+        return None, None, f"Could not read {notice_path}: {exc}"
+    try:
+        electors_raw = pd.read_excel(electors_path, sheet_name=0, header=None)
+    except FileNotFoundError:
+        return None, None, f"File not found: {electors_path}"
+    except Exception as exc:  # noqa: BLE001
+        return None, None, f"Could not read {electors_path}: {exc}"
 
-    rename_map = {
-        "State Id": "State_Id", "State Name": "State",
-        "District Number": "District_No", "District Name": "District",
-        "AC Number": "AC_No", "Asmbly Name": "AC_Name", "Part No": "Part_No",
-        "Notice Generated": "Notice_Generated",
-        "Pending for Notice Generation": "Pending_Notice_Generation",
-        "Notice Delivered": "Notice_Delivered",
-        "Notice Pending Delivery": "Notice_Pending_Delivery",
-        "Hearings Held": "Hearings_Held",
-        "DEO-Status Total Pending": "DEO_Total_Pending",
-        "DEO-Status Pending GT 5 Days": "DEO_Pending_GT5",
-        "DEO-Status Verified": "DEO_Verified",
-        "DEO-Status Not Verified": "DEO_Not_Verified",
-        "ERO/AERO Status Found Ineligible For Final w.r.t. Notice Generated": "Ineligible_Final",
-        "ERO/AERO Status Parked For Final Publication": "Parked_Final_Publication",
-        "ERO/AERO Parked For Final Publication w.r.t. Others": "Parked_Final_Publication_Others",
-    }
-    missing = [c for c in rename_map if c not in raw.columns]
-    if missing:
-        return None, ("Notice_Hearing.xlsx is missing expected column(s): "
-                       + ", ".join(missing))
+    # The last column (T) is entirely blank in the source file, so pandas
+    # drops it on read -- 19 columns is the normal/expected width; 20 is
+    # also accepted in case a future export keeps that blank column.
+    if notice_raw.shape[1] < 19 or notice_raw.shape[0] < 4:
+        return None, None, "Notice.xlsx does not match the expected layout (19-20 columns, header in rows 1-3)."
+    ncols = min(notice_raw.shape[1], len(NOTICE_RAW_COLS))
+    n = notice_raw.iloc[3:, :ncols].copy()
+    n.columns = NOTICE_RAW_COLS[:ncols]
+    if "Blank_Col" not in n.columns:
+        n["Blank_Col"] = None
+    n = n[pd.to_numeric(n["S_No"], errors="coerce").notna()].copy()
+    if n.empty:
+        return None, None, "Notice.xlsx has no usable AC data rows."
+    n["AC_Combo"] = n["AC_Combo"].apply(clean_str)
+    n["AC_No"] = n["AC_Combo"].apply(lambda x: pd.to_numeric(x.split("-")[0], errors="coerce"))
+    n = n[n["AC_No"].notna()].copy()
+    n["AC_No"] = n["AC_No"].astype(int)
+    n["AC_Name"] = n["AC_Combo"].apply(lambda x: clean_str(x.split("-", 1)[1]) if "-" in x else x)
 
-    df = raw.rename(columns=rename_map).copy()
-    df["District"] = df["District"].apply(clean_str)
-    df["AC_Name"] = df["AC_Name"].apply(clean_str)
-
-    num_cols = ["District_No", "AC_No", "Part_No", "Notice_Generated",
-                "Pending_Notice_Generation", "Notice_Delivered",
-                "Notice_Pending_Delivery", "Hearings_Held", "DEO_Total_Pending",
-                "DEO_Pending_GT5", "DEO_Verified", "DEO_Not_Verified",
-                "Ineligible_Final", "Parked_Final_Publication",
-                "Parked_Final_Publication_Others"]
+    num_cols = [c for c in NOTICE_RAW_COLS if c not in ("S_No", "AC_Combo", "Blank_Col")]
     for c in num_cols:
-        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+        n[c] = pd.to_numeric(n[c], errors="coerce").fillna(0)
+    n = n.drop(columns=["S_No", "AC_Combo", "Blank_Col"]).drop_duplicates(subset=["AC_No"])
 
-    df = df[(df["District"] != "") & (df["AC_Name"] != "")].copy()
-    df = df.drop_duplicates(subset=["District_No", "AC_No", "Part_No"])
+    if electors_raw.shape[1] < 10 or electors_raw.shape[0] < 4:
+        return None, None, "Electors.xlsx does not match the expected layout (10 columns, header in rows 1-3)."
+    e = electors_raw.iloc[3:, :10].copy()
+    e.columns = ["AC_No", "AC_Name_E", "District_No", "District", "PC_No", "PC_Name",
+                 "Male", "Female", "Third_Gender", "Electors"]
+    e["AC_No"] = pd.to_numeric(e["AC_No"], errors="coerce")
+    e = e[e["AC_No"].notna()].copy()
+    if e.empty:
+        return None, None, "Electors.xlsx has no usable AC data rows."
+    e["AC_No"] = e["AC_No"].astype(int)
+    e["District"] = e["District"].apply(clean_str)
+    e["Electors"] = pd.to_numeric(e["Electors"], errors="coerce").fillna(0)
+    e = e.drop_duplicates(subset=["AC_No"])
 
-    return df, None
+    df = n.merge(e[["AC_No", "District", "Electors"]], on="AC_No", how="left")
+    unmatched = int(df["District"].isna().sum())
+    df["District"] = df["District"].fillna("Unassigned / AC Not Mapped")
+    df["Electors"] = df["Electors"].fillna(0)
+
+    meta = {"n_acs": len(df), "unmatched_acs": unmatched}
+    return df, meta, None
 
 
 @st.cache_data(show_spinner=False)
-def build_ac_district_map(nh_df: pd.DataFrame):
-    """Derive AC -> District mapping from Notice_Hearing.xlsx (ground truth)."""
-    if nh_df is None or nh_df.empty:
+def build_ac_district_map(notice_df: pd.DataFrame):
+    """Derive AC -> District mapping from the Notice & Hearing data (ground
+    truth, sourced from Electors.xlsx) -- Form_Processing.xlsx has no
+    District column of its own, so this is how it gets one."""
+    if notice_df is None or notice_df.empty:
         return {}
-    m = nh_df[["AC_No", "District"]].drop_duplicates()
+    m = notice_df[["AC_No", "District"]].drop_duplicates()
     return dict(zip(m["AC_No"].astype(int), m["District"]))
 
 
@@ -408,43 +476,86 @@ def fp_ac_report(df: pd.DataFrame) -> pd.DataFrame:
              .drop(columns="_dist_total"))
 
 
-def nh_district_report(df: pd.DataFrame) -> pd.DataFrame:
+def _add_notice_pct_cols(g: pd.DataFrame) -> pd.DataFrame:
+    """% Lapsed and % Parked for Final -- the two derived columns in the
+    Notice & Hearing report, computed the same way at every grouping level
+    (district, AC, or the grand total row) so the numbers stay consistent:
+      % Lapsed = Hearing Date Lapsed / Notice Delivered
+      % Parked for Final = (Parked w.r.t. Notices Generated + Parked w.r.t.
+                             Others) / Electors
+    (safe_div already returns the ratio *100, e.g. 21.02 for 21.02%.)
+    """
+    g["Lapsed_%"] = g.apply(
+        lambda r: safe_div(r["Hearing_Date_Lapsed"], r["Notice_Delivered"]), axis=1)
+    g["Parked_Final_%"] = g.apply(
+        lambda r: safe_div(r["Parked_Notices_Generated"] + r["Parked_Others"], r["Electors"]), axis=1)
+    return g
+
+
+def notice_district_report(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     g = df.groupby("District", as_index=False).agg(
         ACs_Reporting=("AC_No", "nunique"),
-        Parts=("Part_No", "count"),
+        Electors=("Electors", "sum"),
         Notice_Generated=("Notice_Generated", "sum"),
         Notice_Delivered=("Notice_Delivered", "sum"),
         Notice_Pending_Delivery=("Notice_Pending_Delivery", "sum"),
-        Hearings_Held=("Hearings_Held", "sum"),
+        Hearing_Held=("Hearing_Held", "sum"),
+        Hearing_Date_Lapsed=("Hearing_Date_Lapsed", "sum"),
         DEO_Total_Pending=("DEO_Total_Pending", "sum"),
         DEO_Pending_GT5=("DEO_Pending_GT5", "sum"),
         Ineligible_Final=("Ineligible_Final", "sum"),
+        Parked_Notices_Generated=("Parked_Notices_Generated", "sum"),
+        Parked_Others=("Parked_Others", "sum"),
     )
-    return g.sort_values("Notice_Generated", ascending=False)
+    g = _add_notice_pct_cols(g)
+    return g.sort_values("Electors", ascending=False)
 
 
-def nh_ac_report(df: pd.DataFrame) -> pd.DataFrame:
+def notice_ac_report(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     g = df.groupby(["District", "AC_No", "AC_Name"], as_index=False).agg(
-        Parts=("Part_No", "count"),
+        Electors=("Electors", "sum"),
         Notice_Generated=("Notice_Generated", "sum"),
         Notice_Delivered=("Notice_Delivered", "sum"),
         Notice_Pending_Delivery=("Notice_Pending_Delivery", "sum"),
-        Hearings_Held=("Hearings_Held", "sum"),
+        Hearing_Held=("Hearing_Held", "sum"),
+        Hearing_Date_Lapsed=("Hearing_Date_Lapsed", "sum"),
         DEO_Total_Pending=("DEO_Total_Pending", "sum"),
         DEO_Pending_GT5=("DEO_Pending_GT5", "sum"),
         Ineligible_Final=("Ineligible_Final", "sum"),
+        Parked_Notices_Generated=("Parked_Notices_Generated", "sum"),
+        Parked_Others=("Parked_Others", "sum"),
     )
-    # Group rows by District (districts ordered by their own total volume,
+    g = _add_notice_pct_cols(g)
+    # Group rows by District (districts ordered by their own total electors,
     # highest first -- matching the District-wise report above), and within
-    # each district rank ACs from top notices-generated to lowest.
-    dist_total = g.groupby("District")["Notice_Generated"].transform("sum")
+    # each district rank ACs from most electors to fewest.
+    dist_total = g.groupby("District")["Electors"].transform("sum")
     return (g.assign(_dist_total=dist_total)
-             .sort_values(["_dist_total", "District", "Notice_Generated"], ascending=[False, True, False])
+             .sort_values(["_dist_total", "District", "Electors"], ascending=[False, True, False])
              .drop(columns="_dist_total"))
+
+
+def notice_total_row(dist_rep: pd.DataFrame) -> pd.DataFrame:
+    """Grand-total row for the District-wise report -- summed from the
+    per-district numbers (not read off a sheet total), with % Lapsed and
+    % Parked for Final recomputed from those summed totals rather than
+    averaged, so the Total row's percentages are internally consistent."""
+    if dist_rep.empty:
+        return dist_rep
+    sum_cols = ["Electors", "Notice_Generated", "Notice_Delivered", "Notice_Pending_Delivery",
+                "Hearing_Held", "Hearing_Date_Lapsed", "DEO_Total_Pending", "DEO_Pending_GT5",
+                "Ineligible_Final", "Parked_Notices_Generated", "Parked_Others"]
+    totals = {c: dist_rep[c].sum() for c in sum_cols if c in dist_rep.columns}
+    totals["District"] = "Total"
+    if "ACs_Reporting" in dist_rep.columns:
+        totals["ACs_Reporting"] = dist_rep["ACs_Reporting"].sum()
+    row = pd.DataFrame([totals])
+    row = _add_notice_pct_cols(row)
+    return row
 
 
 # --------------------------------------------------------------------------
@@ -724,7 +835,8 @@ def _rate_badge_class(col: str, val) -> str:
     return ""
 
 
-def render_html_table(df: pd.DataFrame, cols: list, formats: dict = None, caption: str = None):
+def render_html_table(df: pd.DataFrame, cols: list, formats: dict = None, caption: str = None,
+                       labels: dict = None, total_row: dict = None):
     """Render a dataframe as a custom, theme-independent HTML table.
 
     Streamlit's st.dataframe() renders through a canvas-based grid component
@@ -734,32 +846,46 @@ def render_html_table(df: pd.DataFrame, cols: list, formats: dict = None, captio
     st.markdown(unsafe_allow_html=True) is fully CSS-controllable and
     completely independent of the viewer's theme, and is wrapped here in a
     horizontally-scrollable "glass" container so it stays usable on a phone.
+
+    labels: optional {column: header text} override for columns whose plain
+    "replace underscore with space" name isn't the wording the table should
+    show. total_row: optional {column: value} for a bold grand-total row
+    appended after the regular rows (formatted with the same `formats`).
     """
     formats = formats or {}
+    labels = labels or {}
     view = df[cols].copy()
     numeric_cols = set(view.select_dtypes(include="number").columns)
 
-    thead = "".join(f"<th>{c.replace('_', ' ')}</th>" for c in cols)
+    def _label(c):
+        return labels.get(c, c.replace("_", " "))
 
-    body_rows = []
-    for _, row in view.iterrows():
+    thead = "".join(f"<th>{_label(c)}</th>" for c in cols)
+
+    def _render_row(row_dict, bold=False):
         cells = []
         for c in cols:
-            val = row[c]
+            val = row_dict.get(c)
             if c in formats:
                 try:
                     disp = formats[c].format(val)
                 except (TypeError, ValueError):
                     disp = "" if pd.isna(val) else str(val)
             else:
-                disp = "" if pd.isna(val) else str(val)
-            align = "right" if c in numeric_cols else "left"
-            badge = _rate_badge_class(c, val) if c in numeric_cols else ""
+                disp = "" if (val is None or (isinstance(val, float) and pd.isna(val))) else str(val)
+            is_numeric = c in numeric_cols or isinstance(val, (int, float))
+            align = "right" if is_numeric else "left"
+            badge = _rate_badge_class(c, val) if (not bold and is_numeric) else ""
+            style = f"text-align:{align}" + ("; font-weight:700" if bold else "")
             if badge:
-                cells.append(f'<td style="text-align:{align}"><span class="rate-badge {badge}">{disp}</span></td>')
+                cells.append(f'<td style="{style}"><span class="rate-badge {badge}">{disp}</span></td>')
             else:
-                cells.append(f'<td style="text-align:{align}">{disp}</td>')
-        body_rows.append("<tr>" + "".join(cells) + "</tr>")
+                cells.append(f'<td style="{style}">{disp}</td>')
+        return "<tr>" + "".join(cells) + "</tr>"
+
+    body_rows = [_render_row(row.to_dict()) for _, row in view.iterrows()]
+    if total_row:
+        body_rows.append(_render_row(total_row, bold=True))
 
     table_html = (
         '<div class="glass-table-wrap"><table class="glass-table">'
@@ -829,8 +955,15 @@ def _fig_to_png(fig, width=1000, height=480):
 
 
 def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
-                      charts, district_cols=None, ac_cols=None):
-    """Builds a professional MIS PDF report and returns bytes."""
+                      charts, district_cols=None, ac_cols=None, col_labels=None,
+                      district_total_row=None):
+    """Builds a professional MIS PDF report and returns bytes.
+
+    col_labels: optional {column: header text} override (see render_html_table).
+    district_total_row: optional {column: value} bold grand-total row appended
+    to the District-wise table.
+    """
+    col_labels = col_labels or {}
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape, portrait
     from reportlab.lib.units import mm
@@ -926,13 +1059,16 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
     def _fmt_cell(val, col):
         if isinstance(val, float):
             if "%" in col:
-                return f"{val:.1f}"
+                return f"{val:.2f}"
             return f"{val:,.0f}" if val == int(val) else f"{val:,.1f}"
         if isinstance(val, int):
             return f"{val:,}"
         return str(val)
 
-    def df_to_table(df, cols, max_rows=None):
+    total_row_style = ParagraphStyle("MISCellTotal", parent=cell_style, fontName="Helvetica-Bold")
+    total_row_style_r = ParagraphStyle("MISCellTotalR", parent=cell_style_r, fontName="Helvetica-Bold")
+
+    def df_to_table(df, cols, max_rows=None, total_row=None):
         cols = [c for c in cols if c in df.columns]
         show = df[cols].head(max_rows).copy() if max_rows else df[cols].copy()
 
@@ -949,7 +1085,7 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
         total_w = sum(weights)
         col_widths = [doc.width * w / total_w for w in weights]
 
-        header = [Paragraph(c.replace("_", " "), header_cell_style) for c in cols]
+        header = [Paragraph(col_labels.get(c, c.replace("_", " ")), header_cell_style) for c in cols]
         data_rows = []
         for _, row in show.iterrows():
             cells = []
@@ -960,8 +1096,7 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
             data_rows.append(cells)
         data = [header] + data_rows
 
-        t = Table(data, colWidths=col_widths, repeatRows=1)
-        t.setStyle(TableStyle([
+        style_cmds = [
             ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_PRIMARY_DARK)),
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F6FA")]),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D5DCE8")),
@@ -970,13 +1105,28 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
             ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
             ("LEFTPADDING", (0, 0), (-1, -1), 5),
             ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-        ]))
+        ]
+
+        if total_row:
+            trow = []
+            for c in cols:
+                val = total_row.get(c)
+                text = _fmt_cell(val, c) if val is not None else ""
+                style = total_row_style if c in WIDE_COLS or c == "District" else total_row_style_r
+                trow.append(Paragraph(text, style))
+            data.append(trow)
+            last = len(data) - 1
+            style_cmds.append(("BACKGROUND", (0, last), (-1, last), colors.HexColor("#DCE6F5")))
+            style_cmds.append(("LINEABOVE", (0, last), (-1, last), 1, colors.HexColor(BRAND_PRIMARY_DARK)))
+
+        t = Table(data, colWidths=col_widths, repeatRows=1)
+        t.setStyle(TableStyle(style_cmds))
         return t
 
     if district_df is not None and not district_df.empty and district_cols:
         _section_gap()
         story.append(Paragraph("<b>District-wise Report</b>", h2_style))
-        story.append(df_to_table(district_df, district_cols))
+        story.append(df_to_table(district_df, district_cols, total_row=district_total_row))
         section_added = True
 
     if ac_df is not None and not ac_df.empty and ac_cols:
@@ -1021,7 +1171,7 @@ st.markdown(f"""
 </div>
 """, unsafe_allow_html=True)
 
-nh_df, nh_err = load_notice_hearing(NOTICE_HEARING_FILE)
+nh_df, nh_meta, nh_err = load_notice_data(NOTICE_FILE, ELECTORS_FILE)
 ac_map = build_ac_district_map(nh_df) if nh_df is not None else {}
 fp_df, fp_meta, fp_err = load_form_processing(FORM_PROCESSING_FILE, ac_map)
 
@@ -1317,12 +1467,19 @@ else:
     if nh_err:
         st.error(f"**Notice & Hearing data could not be loaded.**\n\n{nh_err}")
     elif nh_df is None or nh_df.empty:
-        st.warning("Notice_Hearing.xlsx loaded but contains no usable data rows.")
+        st.warning("Notice.xlsx / Electors.xlsx loaded but contain no usable data rows.")
     else:
+        unmatched_note = ""
+        if nh_meta and nh_meta.get("unmatched_acs"):
+            unmatched_note = (f" <span style=\"color:{BRAND_DANGER}\">"
+                               f"({nh_meta['unmatched_acs']} AC(s) in Notice.xlsx could not be matched "
+                               f"to a District in Electors.xlsx.)</span>")
         st.markdown(f"""<div class="note-box">
-            <b>Granularity:</b> one row per polling-station Part within an AC within a District
-            ({fmt_int(len(nh_df))} parts across {nh_df['District'].nunique()} districts and {nh_df['AC_No'].nunique()} ACs).
-            <br><span style="color:{BRAND_MUTED}">No date field exists in this workbook, so no date filter/trend is shown here.</span>
+            <b>Granularity:</b> one row per Assembly Constituency (AC)
+            ({fmt_int(len(nh_df))} ACs across {nh_df['District'].nunique()} districts).
+            <br><span style="color:{BRAND_MUTED}">Built from Notice.xlsx (notice/hearing/DEO/ERO counts) and
+            Electors.xlsx (elector totals + District mapping). No date field exists in these workbooks,
+            so no date filter/trend is shown here.</span>{unmatched_note}
             </div>""", unsafe_allow_html=True)
 
         with st.sidebar:
@@ -1332,7 +1489,7 @@ else:
             nh_scope = nh_df[nh_df["District"].isin(nh_sel_districts)] if nh_sel_districts else nh_df
             nh_acs = sorted(nh_scope["AC_Name"].unique())
             nh_sel_acs = st.multiselect("Assembly Constituency (AC)", nh_acs, default=[], key="nh_ac")
-            nh_pending_only = st.checkbox("Show only Parts with DEO-pending cases", value=False, key="nh_pending_only")
+            nh_pending_only = st.checkbox("Show only ACs with DEO-pending cases", value=False, key="nh_pending_only")
 
         nh_filtered = nh_df.copy()
         if nh_sel_districts:
@@ -1345,100 +1502,94 @@ else:
         nh_filt_parts = []
         if nh_sel_districts: nh_filt_parts.append("District: " + ", ".join(nh_sel_districts))
         if nh_sel_acs: nh_filt_parts.append("AC: " + ", ".join(nh_sel_acs))
-        if nh_pending_only: nh_filt_parts.append("Only Parts with DEO-pending cases")
+        if nh_pending_only: nh_filt_parts.append("Only ACs with DEO-pending cases")
         nh_filters_desc = " | ".join(nh_filt_parts)
 
         if nh_filtered.empty:
             no_data_message()
         else:
+            electors = nh_filtered["Electors"].sum()
             notice_gen = nh_filtered["Notice_Generated"].sum()
             notice_del = nh_filtered["Notice_Delivered"].sum()
-            notice_pend_del = nh_filtered["Notice_Pending_Delivery"].sum()
-            hearings_held = nh_filtered["Hearings_Held"].sum()
+            hearing_held = nh_filtered["Hearing_Held"].sum()
+            hearing_lapsed = nh_filtered["Hearing_Date_Lapsed"].sum()
             deo_pending = nh_filtered["DEO_Total_Pending"].sum()
-            deo_pending_gt5 = nh_filtered["DEO_Pending_GT5"].sum()
             ineligible = nh_filtered["Ineligible_Final"].sum()
+            parked_notices = nh_filtered["Parked_Notices_Generated"].sum()
+            parked_others = nh_filtered["Parked_Others"].sum()
+            parked_total = parked_notices + parked_others
+            lapsed_pct = safe_div(hearing_lapsed, notice_del)
+            parked_pct = safe_div(parked_total, electors)
 
             section_title("Key Performance Indicators")
             c1, c2, c3, c4 = st.columns(4, gap="medium")
-            kpi_card(c1, "Notices Generated", fmt_int(notice_gen),
-                     f"{nh_filtered['AC_No'].nunique()} ACs · {fmt_int(len(nh_filtered))} parts")
-            kpi_card(c2, "Notices Delivered", fmt_int(notice_del),
-                     f"{fmt_pct(safe_div(notice_del, notice_gen))} delivery rate", color=BRAND_ACCENT)
-            kpi_card(c3, "Notice Pending Delivery", fmt_int(notice_pend_del),
-                     f"{fmt_pct(safe_div(notice_pend_del, notice_gen))} of generated", color=BRAND_WARN)
-            kpi_card(c4, "Hearings Held", fmt_int(hearings_held),
-                     f"{fmt_pct(safe_div(hearings_held, notice_del))} of delivered notices")
+            kpi_card(c1, "Electors", fmt_int(electors),
+                     f"{nh_filtered['AC_No'].nunique()} ACs · {nh_filtered['District'].nunique()} districts")
+            kpi_card(c2, "Notice Delivered", fmt_int(notice_del),
+                     f"{fmt_pct(safe_div(notice_del, notice_gen))} of notices generated", color=BRAND_ACCENT)
+            kpi_card(c3, "Hearing Held", fmt_int(hearing_held),
+                     f"{fmt_pct(safe_div(hearing_held, notice_del))} of delivered notices")
+            kpi_card(c4, "Hearing Date Lapsed", fmt_int(hearing_lapsed),
+                     f"{fmt_pct(lapsed_pct)} of delivered notices", color=BRAND_DANGER)
 
             c5, c6, c7 = st.columns(3, gap="medium")
-            kpi_card(c5, "DEO Pending", fmt_int(deo_pending),
-                     f"{fmt_pct(safe_div(deo_pending, notice_gen))} of notices generated", color=BRAND_DANGER)
-            kpi_card(c6, "DEO Pending > 5 Days", fmt_int(deo_pending_gt5),
-                     f"{fmt_pct(safe_div(deo_pending_gt5, deo_pending))} of DEO backlog is overdue", color=BRAND_DANGER)
-            kpi_card(c7, "Found Ineligible for Final", fmt_int(ineligible),
+            kpi_card(c5, "Total Pending Text (DEO)", fmt_int(deo_pending),
+                     f"{fmt_pct(safe_div(deo_pending, notice_gen))} of notices generated", color=BRAND_WARN)
+            kpi_card(c6, "Found Ineligible for Final (ERO)", fmt_int(ineligible),
                      f"{fmt_pct(safe_div(ineligible, notice_gen))} of notices generated", color=BRAND_WARN)
+            kpi_card(c7, "Parked for Final Publication", fmt_int(parked_total),
+                     f"{fmt_pct(parked_pct)} of electors", color=BRAND_ACCENT)
 
             if SHOW_CHARTS:
                 section_title("Visual Analysis")
                 v1, v2 = st.columns(2)
                 with v1:
-                    fig = px.pie(names=["Delivered", "Pending Delivery"],
-                                 values=[notice_del, notice_pend_del], hole=0.5,
-                                 title="Notice Delivery Split", color_discrete_sequence=[BRAND_ACCENT, BRAND_WARN])
+                    fig = px.pie(names=["Delivered", "Hearing Date Lapsed"],
+                                 values=[notice_del, hearing_lapsed], hole=0.5,
+                                 title="Hearing Lapse Split", color_discrete_sequence=[BRAND_ACCENT, BRAND_DANGER])
                     st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
                 with v2:
-                    pend_df = nh_filtered.groupby("District")[["DEO_Total_Pending", "DEO_Pending_GT5"]].sum()
+                    pend_df = nh_filtered.groupby("District")[["DEO_Total_Pending", "Ineligible_Final"]].sum()
                     pend_df = pend_df.loc[pend_df["DEO_Total_Pending"].sort_values(ascending=False).index]
                     fig = go.Figure()
-                    fig.add_bar(name="Total Pending", x=pend_df.index, y=pend_df["DEO_Total_Pending"], marker_color=BRAND_WARN)
-                    fig.add_bar(name="Pending > 5 Days", x=pend_df.index, y=pend_df["DEO_Pending_GT5"], marker_color=BRAND_DANGER)
-                    fig.update_layout(barmode="overlay", title="DEO Pendency by District (overdue vs total)")
+                    fig.add_bar(name="DEO Pending", x=pend_df.index, y=pend_df["DEO_Total_Pending"], marker_color=BRAND_WARN)
+                    fig.add_bar(name="Ineligible for Final", x=pend_df.index, y=pend_df["Ineligible_Final"], marker_color=BRAND_DANGER)
+                    fig.update_layout(barmode="overlay", title="DEO Pendency & Ineligibility by District")
                     st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
 
                 v3, v4 = st.columns(2)
                 with v3:
-                    cmp = nh_filtered.groupby("District")[["Notice_Generated", "Notice_Delivered", "Hearings_Held"]].sum()
+                    cmp = nh_filtered.groupby("District")[["Notice_Generated", "Notice_Delivered", "Hearing_Held"]].sum()
                     cmp = cmp.loc[cmp["Notice_Generated"].sort_values(ascending=False).index]
-                    fig = px.bar(cmp, x=cmp.index, y=["Notice_Generated", "Notice_Delivered", "Hearings_Held"],
-                                 barmode="group", title="District Comparison: Generated / Delivered / Hearings Held",
+                    fig = px.bar(cmp, x=cmp.index, y=["Notice_Generated", "Notice_Delivered", "Hearing_Held"],
+                                 barmode="group", title="District Comparison: Generated / Delivered / Hearing Held",
                                  color_discrete_sequence=CHART_COLORWAY, labels={"value": "Count", "variable": ""})
                     st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
                 with v4:
-                    # Delivery rate is uniformly high (~97-100%) across ACs in this
-                    # data, so ranking by rate barely differentiates ACs. The
-                    # absolute "Pending Delivery" count is the actionable view for
-                    # an officer -- it shows exactly where the undelivered notices
-                    # are concentrated.
-                    ac_pend = nh_filtered.groupby("AC_Name")["Notice_Pending_Delivery"].sum().sort_values(ascending=False).head(15)
-                    fig = px.bar(x=ac_pend.values, y=ac_pend.index, orientation="h",
-                                 title="Top 15 ACs by Notice Pending Delivery (count)",
-                                 labels={"x": "Notices Pending Delivery", "y": ""})
+                    ac_lapsed = nh_filtered.groupby("AC_Name")["Hearing_Date_Lapsed"].sum().sort_values(ascending=False).head(15)
+                    fig = px.bar(x=ac_lapsed.values, y=ac_lapsed.index, orientation="h",
+                                 title="Top 15 ACs by Hearing Date Lapsed (count)",
+                                 labels={"x": "Hearing Date Lapsed", "y": ""})
                     fig.update_traces(marker_color=BRAND_DANGER)
                     fig.update_yaxes(autorange="reversed")
                     st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
 
             # ------------------ District-wise report ------------------
             section_title("District-wise Report")
-            nh_dist_rep = nh_district_report(nh_filtered)
-            nh_dist_display_cols = ["District", "ACs_Reporting", "Parts", "Notice_Generated", "Notice_Delivered",
-                                     "Hearings_Held", "DEO_Total_Pending",
-                                     "DEO_Pending_GT5", "Ineligible_Final"]
-            nh_sort_opt = st.selectbox("Sort district report by", nh_dist_display_cols[1:],
-                                        index=nh_dist_display_cols.index("Notice_Generated") - 1, key="nh_dist_sort")
-            nh_dist_view = nh_dist_rep[nh_dist_display_cols].sort_values(nh_sort_opt, ascending=False)
+            nh_dist_rep = notice_district_report(nh_filtered)
+            nh_dist_view = nh_dist_rep.sort_values("Electors", ascending=False)
+            nh_dist_total = notice_total_row(nh_dist_rep)
             render_html_table(
-                nh_dist_view, NH_DIST_SCREEN_COLS,
-                formats={
-                    "Notice_Generated": "{:,.0f}", "Notice_Delivered": "{:,.0f}",
-                    "DEO_Total_Pending": "{:,.0f}", "DEO_Pending_GT5": "{:,.0f}",
-                },
-                caption="Showing key monitoring columns. Full column set is included in the Excel/PDF export below.",
+                nh_dist_view, NOTICE_DIST_COLS,
+                formats=NOTICE_COL_FORMATS, labels=NOTICE_COL_LABELS,
+                total_row=nh_dist_total.iloc[0].to_dict() if not nh_dist_total.empty else None,
+                caption="Columns match the requested report format exactly.",
             )
 
             if SHOW_CHARTS:
-                fig = px.bar(nh_dist_view, x="District", y=["Notice_Generated", "Notice_Delivered"],
-                             barmode="group", title="District Comparison: Notices Generated vs Delivered",
-                             color_discrete_sequence=CHART_COLORWAY, labels={"value": "Notices", "variable": ""})
+                fig = px.bar(nh_dist_view, x="District", y=["Notice_Delivered", "Hearing_Held"],
+                             barmode="group", title="District Comparison: Notice Delivered vs Hearing Held",
+                             color_discrete_sequence=CHART_COLORWAY, labels={"value": "Count", "variable": ""})
                 st.plotly_chart(apply_plotly_theme(fig, height=360), use_container_width=True)
 
             # ------------------ AC-wise report ------------------
@@ -1447,24 +1598,18 @@ else:
                                             ["All Districts"] + sorted(nh_filtered["District"].unique()),
                                             key="nh_ac_district_pick")
             nh_ac_scope = nh_filtered if nh_ac_dist_pick == "All Districts" else nh_filtered[nh_filtered["District"] == nh_ac_dist_pick]
-            nh_ac_rep = nh_ac_report(nh_ac_scope)
-            nh_ac_display_cols = ["District", "AC_No", "AC_Name", "Parts", "Notice_Generated", "Notice_Delivered",
-                                   "Hearings_Held", "DEO_Total_Pending",
-                                   "DEO_Pending_GT5"]
+            nh_ac_rep = notice_ac_report(nh_ac_scope)
             render_html_table(
-                nh_ac_rep, NH_AC_SCREEN_COLS,
-                formats={
-                    "Notice_Generated": "{:,.0f}", "Notice_Delivered": "{:,.0f}",
-                    "DEO_Total_Pending": "{:,.0f}", "DEO_Pending_GT5": "{:,.0f}",
-                },
-                caption="Showing key monitoring columns. Full column set is included in the Excel/PDF export below.",
+                nh_ac_rep, NOTICE_AC_COLS,
+                formats=NOTICE_COL_FORMATS, labels=NOTICE_COL_LABELS,
+                caption="Columns match the requested report format exactly.",
             )
 
             if SHOW_CHARTS:
-                ac_chart_df2 = nh_ac_rep.sort_values("Notice_Generated", ascending=False).head(20)
-                fig = px.bar(ac_chart_df2, x="AC_Name", y=["Notice_Delivered", "Notice_Pending_Delivery"],
-                             barmode="stack", title=f"AC Comparison ({nh_ac_dist_pick}) - Top 20 by Notices Generated",
-                             color_discrete_sequence=CHART_COLORWAY, labels={"value": "Notices", "variable": ""})
+                ac_chart_df2 = nh_ac_rep.sort_values("Electors", ascending=False).head(20)
+                fig = px.bar(ac_chart_df2, x="AC_Name", y=["Notice_Delivered", "Hearing_Held"],
+                             barmode="stack", title=f"AC Comparison ({nh_ac_dist_pick}) - Top 20 by Electors",
+                             color_discrete_sequence=CHART_COLORWAY, labels={"value": "Count", "variable": ""})
                 fig.update_xaxes(tickangle=-40)
                 st.plotly_chart(apply_plotly_theme(fig, height=380), use_container_width=True)
 
@@ -1483,22 +1628,24 @@ else:
                                     use_container_width=True, key="nh_dl1")
             with dcol2:
                 kpis_for_pdf2 = {
-                    "Notices Generated": fmt_int(notice_gen),
-                    "Notices Delivered": f"{fmt_int(notice_del)} ({fmt_pct(safe_div(notice_del, notice_gen))})",
-                    "Notice Pending Delivery": fmt_int(notice_pend_del),
-                    "Hearings Held": f"{fmt_int(hearings_held)} ({fmt_pct(safe_div(hearings_held, notice_del))} of delivered)",
-                    "DEO Pending": fmt_int(deo_pending),
-                    "DEO Pending > 5 Days": f"{fmt_int(deo_pending_gt5)} ({fmt_pct(safe_div(deo_pending_gt5, deo_pending))} of backlog)",
-                    "Found Ineligible for Final": fmt_int(ineligible),
+                    "Electors": fmt_int(electors),
+                    "Notice Delivered": f"{fmt_int(notice_del)} ({fmt_pct(safe_div(notice_del, notice_gen))} of generated)",
+                    "Hearing Held": f"{fmt_int(hearing_held)} ({fmt_pct(safe_div(hearing_held, notice_del))} of delivered)",
+                    "Hearing Date Lapsed": f"{fmt_int(hearing_lapsed)} ({fmt_pct(lapsed_pct)} of delivered)",
+                    "Total Pending Text (DEO)": fmt_int(deo_pending),
+                    "Found Ineligible for Final (ERO)": fmt_int(ineligible),
+                    "Parked for Final Publication": f"{fmt_int(parked_total)} ({fmt_pct(parked_pct)} of electors)",
                 }
                 try:
                     pdf_bytes2 = build_pdf_report(
                         title="Notice & Hearing Report",
-                        subtitle=f"{fmt_int(len(nh_filtered))} polling-station parts in scope",
+                        subtitle=f"{fmt_int(len(nh_filtered))} Assembly Constituencies in scope",
                         filters_desc=nh_filters_desc, kpis=kpis_for_pdf2,
-                        district_df=nh_dist_view, ac_df=nh_ac_rep[nh_ac_display_cols],
+                        district_df=nh_dist_view, ac_df=nh_ac_rep,
                         charts=[],
-                        district_cols=nh_dist_display_cols, ac_cols=nh_ac_display_cols,
+                        district_cols=NOTICE_DIST_COLS, ac_cols=NOTICE_AC_COLS,
+                        col_labels=NOTICE_COL_LABELS,
+                        district_total_row=nh_dist_total.iloc[0].to_dict() if not nh_dist_total.empty else None,
                     )
                     st.download_button("\U0001F4C4 Download PDF Report (full)", pdf_bytes2,
                                         file_name="Notice_Hearing_Report.pdf",
@@ -1518,10 +1665,11 @@ else:
                 try:
                     nh_dist_pdf_bytes = build_pdf_report(
                         title="Notice & Hearing Report - District-wise",
-                        subtitle=f"{fmt_int(len(nh_filtered))} polling-station parts in scope",
+                        subtitle=f"{fmt_int(len(nh_filtered))} Assembly Constituencies in scope",
                         filters_desc=nh_filters_desc, kpis=None,
                         district_df=nh_dist_view, ac_df=None, charts=[],
-                        district_cols=nh_dist_display_cols,
+                        district_cols=NOTICE_DIST_COLS, col_labels=NOTICE_COL_LABELS,
+                        district_total_row=nh_dist_total.iloc[0].to_dict() if not nh_dist_total.empty else None,
                     )
                     st.download_button("\U0001F4C4 District-wise (PDF)", nh_dist_pdf_bytes,
                                         file_name="Notice_Hearing_District_Report.pdf",
@@ -1538,10 +1686,10 @@ else:
                 try:
                     nh_ac_pdf_bytes = build_pdf_report(
                         title="Notice & Hearing Report - AC-wise",
-                        subtitle=f"{fmt_int(len(nh_filtered))} polling-station parts in scope",
+                        subtitle=f"{fmt_int(len(nh_filtered))} Assembly Constituencies in scope",
                         filters_desc=nh_filters_desc, kpis=None,
-                        district_df=None, ac_df=nh_ac_rep[nh_ac_display_cols], charts=[],
-                        ac_cols=nh_ac_display_cols,
+                        district_df=None, ac_df=nh_ac_rep, charts=[],
+                        ac_cols=NOTICE_AC_COLS, col_labels=NOTICE_COL_LABELS,
                     )
                     st.download_button("\U0001F4C4 AC-wise (PDF)", nh_ac_pdf_bytes,
                                         file_name="Notice_Hearing_AC_Report.pdf",
