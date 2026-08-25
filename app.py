@@ -1621,7 +1621,7 @@ elif active_view == "nh":
                      f"{fmt_pct(lapsed_pct)} of delivered notices", color=BRAND_DANGER)
 
             c5, c6, c7 = st.columns(3, gap="medium")
-            kpi_card(c5, "Total Pending Text (DEO)", fmt_int(deo_pending),
+            kpi_card(c5, "Total Pending (DEO)", fmt_int(deo_pending),
                      f"{fmt_pct(safe_div(deo_pending, notice_gen))} of notices generated", color=BRAND_WARN)
             kpi_card(c6, "Found Ineligible for Final (ERO)", fmt_int(ineligible),
                      f"{fmt_pct(safe_div(ineligible, notice_gen))} of notices generated", color=BRAND_WARN)
@@ -1720,7 +1720,7 @@ elif active_view == "nh":
                     "Notice Delivered": f"{fmt_int(notice_del)} ({fmt_pct(safe_div(notice_del, notice_gen))} of generated)",
                     "Hearing Held": f"{fmt_int(hearing_held)} ({fmt_pct(safe_div(hearing_held, notice_del))} of delivered)",
                     "Hearing Date Lapsed": f"{fmt_int(hearing_lapsed)} ({fmt_pct(lapsed_pct)} of delivered)",
-                    "Total Pending Text (DEO)": fmt_int(deo_pending),
+                    "Total Pending (DEO)": fmt_int(deo_pending),
                     "Found Ineligible for Final (ERO)": fmt_int(ineligible),
                     "Parked for Final Publication": f"{fmt_int(parked_total)} ({fmt_pct(parked_pct)} of electors)",
                 }
