@@ -357,6 +357,17 @@ def load_notice_data(notice_path: str, electors_path: str):
     except Exception as exc:  # noqa: BLE001
         return None, None, f"Could not read {electors_path}: {exc}"
 
+    # Row 1 is the sheet title, and now sometimes has a "Last Updated On :
+    # <timestamp>" suffix appended to it (added directly in the source
+    # workbook) -- pull that out here so it can be shown on the dashboard
+    # and in the PDF export, same as the report-period line already is for
+    # Form_Processing.xlsx.
+    last_updated = None
+    title_cell = clean_str(notice_raw.iat[0, 0]) if notice_raw.shape[0] > 0 else ""
+    last_updated_match = re.search(r"Last Updated On\s*:\s*(.+)$", title_cell, re.IGNORECASE)
+    if last_updated_match:
+        last_updated = last_updated_match.group(1).strip()
+
     # The last column (T) is entirely blank in the source file, so pandas
     # drops it on read -- 19 columns is the normal/expected width; 20 is
     # also accepted in case a future export keeps that blank column.
@@ -400,7 +411,7 @@ def load_notice_data(notice_path: str, electors_path: str):
     df["District"] = df["District"].fillna("Unassigned / AC Not Mapped")
     df["Electors"] = df["Electors"].fillna(0)
 
-    meta = {"n_acs": len(df), "unmatched_acs": unmatched}
+    meta = {"n_acs": len(df), "unmatched_acs": unmatched, "last_updated": last_updated}
     return df, meta, None
 
 
@@ -1548,9 +1559,12 @@ elif active_view == "nh":
             unmatched_note = (f" <span style=\"color:{BRAND_DANGER}\">"
                                f"({nh_meta['unmatched_acs']} AC(s) in Notice.xlsx could not be matched "
                                f"to a District in Electors.xlsx.)</span>")
+        nh_last_updated = nh_meta.get("last_updated") if nh_meta else None
+        last_updated_line = (f"<br><b>Last Updated On:</b> {nh_last_updated}"
+                              if nh_last_updated else "")
         st.markdown(f"""<div class="note-box">
             <b>Granularity:</b> one row per Assembly Constituency (AC)
-            ({fmt_int(len(nh_df))} ACs across {nh_df['District'].nunique()} districts).
+            ({fmt_int(len(nh_df))} ACs across {nh_df['District'].nunique()} districts).{last_updated_line}
             <br><span style="color:{BRAND_MUTED}">Built from Notice.xlsx (notice/hearing/DEO/ERO counts) and
             Electors.xlsx (elector totals + District mapping). No date field exists in these workbooks,
             so no date filter/trend is shown here.</span>{unmatched_note}
@@ -1710,10 +1724,11 @@ elif active_view == "nh":
                     "Found Ineligible for Final (ERO)": fmt_int(ineligible),
                     "Parked for Final Publication": f"{fmt_int(parked_total)} ({fmt_pct(parked_pct)} of electors)",
                 }
+                nh_subtitle_suffix = f"  |  Last Updated On: {nh_last_updated}" if nh_last_updated else ""
                 try:
                     pdf_bytes2 = build_pdf_report(
                         title="Notice & Hearing Report",
-                        subtitle=f"{fmt_int(len(nh_filtered))} Assembly Constituencies in scope",
+                        subtitle=f"{fmt_int(len(nh_filtered))} Assembly Constituencies in scope{nh_subtitle_suffix}",
                         filters_desc=nh_filters_desc, kpis=kpis_for_pdf2,
                         district_df=nh_dist_view, ac_df=nh_ac_rep,
                         charts=[],
@@ -1739,7 +1754,7 @@ elif active_view == "nh":
                 try:
                     nh_dist_pdf_bytes = build_pdf_report(
                         title="Notice & Hearing Report - District-wise",
-                        subtitle=f"{fmt_int(len(nh_filtered))} Assembly Constituencies in scope",
+                        subtitle=f"{fmt_int(len(nh_filtered))} Assembly Constituencies in scope{nh_subtitle_suffix}",
                         filters_desc=nh_filters_desc, kpis=None,
                         district_df=nh_dist_view, ac_df=None, charts=[],
                         district_cols=NOTICE_DIST_COLS, col_labels=NOTICE_COL_LABELS,
@@ -1760,7 +1775,7 @@ elif active_view == "nh":
                 try:
                     nh_ac_pdf_bytes = build_pdf_report(
                         title="Notice & Hearing Report - AC-wise",
-                        subtitle=f"{fmt_int(len(nh_filtered))} Assembly Constituencies in scope",
+                        subtitle=f"{fmt_int(len(nh_filtered))} Assembly Constituencies in scope{nh_subtitle_suffix}",
                         filters_desc=nh_filters_desc, kpis=None,
                         district_df=None, ac_df=nh_ac_rep, charts=[],
                         ac_cols=NOTICE_AC_COLS, col_labels=NOTICE_COL_LABELS,
