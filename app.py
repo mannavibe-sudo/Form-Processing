@@ -147,7 +147,7 @@ NOTICE_COL_LABELS = {
     "Hearing_Held": "Hearing Held",
     "Hearing_Date_Lapsed": "Hearing Date Lapsed",
     "Lapsed_%": "% Lapsed",
-    "DEO_Total_Pending": "Total pending Text (DEO)",
+    "DEO_Total_Pending": "Total pending(DEO)",
     "Ineligible_Final": "Found Ineligible for Final (ERO)",
     "Parked_Notices_Generated": "Parked for Final Publication w.r.t. Notices Generated",
     "Parked_Others": "Parked For Final Publication w.r.t. Others",
