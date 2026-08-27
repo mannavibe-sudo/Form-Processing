@@ -147,7 +147,7 @@ NOTICE_COL_LABELS = {
     "Hearing_Held": "Hearing Held",
     "Hearing_Date_Lapsed": "Hearing Date Lapsed",
     "Lapsed_%": "% Lapsed",
-    "DEO_Total_Pending": "Total pending(DEO)",
+    "DEO_Total_Pending": "Total pending Text (DEO)",
     "Ineligible_Final": "Found Ineligible for Final (ERO)",
     "Parked_Notices_Generated": "Parked for Final Publication w.r.t. Notices Generated",
     "Parked_Others": "Parked For Final Publication w.r.t. Others",
@@ -273,11 +273,37 @@ DIFF_COL_FORMATS.update({
 # --------------------------------------------------------------------------
 # Small formatting helpers
 # --------------------------------------------------------------------------
-def fmt_int(n) -> str:
+def fmt_indian(n, decimals: int = 0) -> str:
+    """Format a number with Indian digit grouping (last 3 digits, then
+    groups of 2: 71,33,785 rather than the western 7,133,785) -- every
+    report in this app is for an Indian (Uttarakhand SIR) audience, so all
+    grouped numbers use this instead of Python's built-in ',' format spec,
+    which always groups in 3s."""
     try:
-        return f"{int(round(float(n))):,}"
+        n = float(n)
     except (TypeError, ValueError):
         return "0"
+    negative = n < 0
+    formatted = f"{abs(n):.{decimals}f}"
+    int_str, _, frac_str = formatted.partition(".")
+    if len(int_str) <= 3:
+        grouped = int_str
+    else:
+        last3 = int_str[-3:]
+        rest = int_str[:-3]
+        parts = []
+        while len(rest) > 2:
+            parts.insert(0, rest[-2:])
+            rest = rest[:-2]
+        if rest:
+            parts.insert(0, rest)
+        grouped = ",".join(parts) + "," + last3
+    result = f"{grouped}.{frac_str}" if frac_str else grouped
+    return ("-" if negative else "") + result
+
+
+def fmt_int(n) -> str:
+    return fmt_indian(n, 0)
 
 
 def fmt_pct(n, decimals=1) -> str:
@@ -291,9 +317,25 @@ def fmt_diff(n) -> str:
     """Like fmt_int, but always shows a sign (+1,234 / -1,234) -- used for
     the Difference Report, where the sign is the whole point."""
     try:
-        return f"{int(round(float(n))):+,}"
+        v = float(n)
     except (TypeError, ValueError):
         return "0"
+    body = fmt_indian(v, 0)  # already carries its own "-" when negative
+    return body if v < 0 else f"+{body}"
+
+
+def _apply_col_format(val, spec: str) -> str:
+    """Render a value using one of the app's column format-spec strings.
+    ",.0f"-style specs (plain or signed grouped integer) are special-cased
+    to route through fmt_indian()/fmt_diff() for Indian digit grouping --
+    Python's own str.format() only groups in 3s (western style). Every
+    other spec (percentages, etc -- always under 100, so grouping doesn't
+    apply) falls through to plain str.format()."""
+    if spec == "{:,.0f}":
+        return fmt_indian(val)
+    if spec == "{:+,.0f}":
+        return fmt_diff(val)
+    return spec.format(val)
 
 
 def safe_div(num, den):
@@ -951,7 +993,7 @@ def render_html_table(df: pd.DataFrame, cols: list, formats: dict = None, captio
             val = row_dict.get(c)
             if c in formats:
                 try:
-                    disp = formats[c].format(val)
+                    disp = _apply_col_format(val, formats[c])
                 except (TypeError, ValueError):
                     disp = "" if pd.isna(val) else str(val)
             else:
@@ -1007,7 +1049,12 @@ def build_excel_download(sheets: dict) -> bytes:
                 header_fmt = wb.add_format({"bold": True, "bg_color": BRAND_PRIMARY,
                                              "font_color": "white", "border": 1})
                 pct_fmt = wb.add_format({"num_format": "0.0", "border": 1})
-                num_fmt = wb.add_format({"num_format": "#,##0", "border": 1})
+                # "#,##,##0" (not the western "#,##0") -- Excel's custom
+                # number-format codes support arbitrary comma placement, and
+                # this is the standard way to get Indian digit grouping
+                # (71,33,785) natively in the spreadsheet, matching the
+                # on-screen/PDF formatting elsewhere in this app.
+                num_fmt = wb.add_format({"num_format": "#,##,##0", "border": 1})
                 for c_idx, col in enumerate(df.columns):
                     header_fmt_local = header_fmt
                     ws.write(0, c_idx, col, header_fmt_local)
@@ -1069,7 +1116,7 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
     sub_style = ParagraphStyle("MISSub", parent=styles["Normal"], fontSize=11.5,
                                 textColor=colors.HexColor(BRAND_MUTED), spaceAfter=4)
     h2_style = ParagraphStyle("MISH2", parent=styles["Heading2"], fontSize=14,
-                               textColor=colors.HexColor(BRAND_PRIMARY_DARK), spaceBefore=8, spaceAfter=5)
+                               textColor=colors.HexColor(BRAND_PRIMARY_DARK), spaceBefore=6, spaceAfter=4)
     body_style = ParagraphStyle("MISBody", parent=styles["Normal"], fontSize=10, leading=14)
     filt_style = ParagraphStyle("MISFilt", parent=styles["Normal"], fontSize=10.5,
                                  textColor=colors.HexColor(BRAND_TEXT))
@@ -1082,13 +1129,13 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
         w, h = pagesize
         canvas.setFillColor(colors.HexColor(BRAND_MUTED))
         canvas.setFont("Helvetica", 8)
-        canvas.drawString(12 * mm, 6 * mm, "Official Report - Uttarakhand SIR")
-        canvas.drawRightString(w - 12 * mm, 6 * mm, f"Page {doc.page}")
+        canvas.drawString(12 * mm, 5 * mm, "Official Report - Uttarakhand SIR")
+        canvas.drawRightString(w - 12 * mm, 5 * mm, f"Page {doc.page}")
         canvas.restoreState()
 
     doc = BaseDocTemplate(buf, pagesize=pagesize,
                            leftMargin=12 * mm, rightMargin=12 * mm,
-                           topMargin=10 * mm, bottomMargin=10 * mm)
+                           topMargin=8 * mm, bottomMargin=8 * mm)
     frame = Frame(doc.leftMargin, doc.bottomMargin, doc.width, doc.height, id="normal")
     doc.addPageTemplates([PageTemplate(id="mis", frames=frame, onPage=header_footer)])
 
@@ -1113,22 +1160,40 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
     if kpis:
         _section_gap()
         story.append(Paragraph("<b>Key Performance Summary</b>", h2_style))
-        rows = [["Metric", "Value"]]
-        for k, v in kpis.items():
-            rows.append([k, v])
-        t = Table(rows, colWidths=[doc.width * 0.6, doc.width * 0.4])
-        t.setStyle(TableStyle([
-            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_PRIMARY)),
-            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-            ("FONTSIZE", (0, 0), (-1, -1), 10.5),
-            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#EEF3FC")]),
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D5DCE8")),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-        ]))
-        story.append(t)
+        # A wide grid (up to 4 metrics per row: label row + value row) instead
+        # of a tall single-column list -- this uses far less page height, so
+        # the District-wise table (with its Total row) has room to fit on
+        # page 1 alongside it instead of spilling onto page 2.
+        kpi_items = list(kpis.items())
+        KPI_COLS_PER_ROW = 4
+        kpi_label_style = ParagraphStyle("MISKpiLabel", fontName="Helvetica-Bold", fontSize=8.3,
+                                          leading=10, textColor=colors.white)
+        kpi_value_style = ParagraphStyle("MISKpiValue", fontName="Helvetica-Bold", fontSize=10.7,
+                                          leading=13, textColor=colors.HexColor(BRAND_PRIMARY_DARK))
+        col_w = doc.width / KPI_COLS_PER_ROW
+        for i in range(0, len(kpi_items), KPI_COLS_PER_ROW):
+            chunk = kpi_items[i:i + KPI_COLS_PER_ROW]
+            label_row = [Paragraph(str(k), kpi_label_style) for k, v in chunk]
+            value_row = [Paragraph(str(v), kpi_value_style) for k, v in chunk]
+            while len(label_row) < KPI_COLS_PER_ROW:
+                label_row.append("")
+                value_row.append("")
+            t = Table([label_row, value_row], colWidths=[col_w] * KPI_COLS_PER_ROW)
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_PRIMARY)),
+                ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#EEF3FC")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D5DCE8")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, 0), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 4),
+                ("TOPPADDING", (0, 1), (-1, 1), 5),
+                ("BOTTOMPADDING", (0, 1), (-1, 1), 6),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ]))
+            story.append(t)
+            if i + KPI_COLS_PER_ROW < len(kpi_items):
+                story.append(Spacer(1, 2))
         section_added = True
 
     NARROW_COLS = {"AC_No", "Parts", "District_No"}
@@ -1143,9 +1208,9 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
         if isinstance(val, float):
             if "%" in col:
                 return f"{val:.2f}"
-            return f"{val:,.0f}" if val == int(val) else f"{val:,.1f}"
+            return fmt_indian(val, 0) if val == int(val) else fmt_indian(val, 1)
         if isinstance(val, int):
-            return f"{val:,}"
+            return fmt_indian(val, 0)
         return str(val)
 
     total_row_style = ParagraphStyle("MISCellTotal", parent=cell_style, fontName="Helvetica-Bold")
@@ -1184,8 +1249,8 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
             ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F4F6FA")]),
             ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D5DCE8")),
             ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("TOPPADDING", (0, 0), (-1, -1), 3.5),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3.5),
+            ("TOPPADDING", (0, 0), (-1, -1), 2.8),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 2.8),
             ("LEFTPADDING", (0, 0), (-1, -1), 5),
             ("RIGHTPADDING", (0, 0), (-1, -1), 5),
         ]
@@ -1621,7 +1686,7 @@ elif active_view == "nh":
                      f"{fmt_pct(lapsed_pct)} of delivered notices", color=BRAND_DANGER)
 
             c5, c6, c7 = st.columns(3, gap="medium")
-            kpi_card(c5, "Total Pending (DEO)", fmt_int(deo_pending),
+            kpi_card(c5, "Total Pending Text (DEO)", fmt_int(deo_pending),
                      f"{fmt_pct(safe_div(deo_pending, notice_gen))} of notices generated", color=BRAND_WARN)
             kpi_card(c6, "Found Ineligible for Final (ERO)", fmt_int(ineligible),
                      f"{fmt_pct(safe_div(ineligible, notice_gen))} of notices generated", color=BRAND_WARN)
@@ -1720,7 +1785,7 @@ elif active_view == "nh":
                     "Notice Delivered": f"{fmt_int(notice_del)} ({fmt_pct(safe_div(notice_del, notice_gen))} of generated)",
                     "Hearing Held": f"{fmt_int(hearing_held)} ({fmt_pct(safe_div(hearing_held, notice_del))} of delivered)",
                     "Hearing Date Lapsed": f"{fmt_int(hearing_lapsed)} ({fmt_pct(lapsed_pct)} of delivered)",
-                    "Total Pending (DEO)": fmt_int(deo_pending),
+                    "Total Pending Text (DEO)": fmt_int(deo_pending),
                     "Found Ineligible for Final (ERO)": fmt_int(ineligible),
                     "Parked for Final Publication": f"{fmt_int(parked_total)} ({fmt_pct(parked_pct)} of electors)",
                 }
