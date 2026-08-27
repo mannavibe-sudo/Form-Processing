@@ -133,11 +133,11 @@ SHOW_CHARTS = False
 # PDF -- no separate "trimmed for screen" vs "full" column set here, unlike
 # Form Processing below, since this set already IS the intended default.
 NOTICE_DIST_COLS = ["District", "Electors", "Notice_Delivered", "Hearing_Held",
-                     "Hearing_Date_Lapsed", "Lapsed_%", "DEO_Total_Pending",
+                     "Hearing_Held_%", "Hearing_Date_Lapsed", "Lapsed_%", "DEO_Total_Pending",
                      "Ineligible_Final", "Parked_Notices_Generated", "Parked_Others",
                      "Parked_Final_%"]
 NOTICE_AC_COLS = ["District", "AC_No", "AC_Name", "Electors", "Notice_Delivered",
-                   "Hearing_Held", "Hearing_Date_Lapsed", "Lapsed_%", "DEO_Total_Pending",
+                   "Hearing_Held", "Hearing_Held_%", "Hearing_Date_Lapsed", "Lapsed_%", "DEO_Total_Pending",
                    "Ineligible_Final", "Parked_Notices_Generated", "Parked_Others",
                    "Parked_Final_%"]
 # Header text for columns whose plain "replace underscore with space" label
@@ -145,6 +145,7 @@ NOTICE_AC_COLS = ["District", "AC_No", "AC_Name", "Electors", "Notice_Delivered"
 NOTICE_COL_LABELS = {
     "Notice_Delivered": "Notice Delivered",
     "Hearing_Held": "Hearing Held",
+    "Hearing_Held_%": "% Hearing Held",
     "Hearing_Date_Lapsed": "Hearing Date Lapsed",
     "Lapsed_%": "% Lapsed",
     "DEO_Total_Pending": "Total pending Text (DEO)",
@@ -155,6 +156,7 @@ NOTICE_COL_LABELS = {
 }
 NOTICE_COL_FORMATS = {
     "Electors": "{:,.0f}", "Notice_Delivered": "{:,.0f}", "Hearing_Held": "{:,.0f}",
+    "Hearing_Held_%": "{:.2f}",
     "Hearing_Date_Lapsed": "{:,.0f}", "Lapsed_%": "{:.2f}",
     "DEO_Total_Pending": "{:,.0f}", "Ineligible_Final": "{:,.0f}",
     "Parked_Notices_Generated": "{:,.0f}", "Parked_Others": "{:,.0f}",
@@ -602,14 +604,18 @@ def fp_diff_report(new_rep: pd.DataFrame, old_rep: pd.DataFrame, key_cols: list)
 
 
 def _add_notice_pct_cols(g: pd.DataFrame) -> pd.DataFrame:
-    """% Lapsed and % Parked for Final -- the two derived columns in the
-    Notice & Hearing report, computed the same way at every grouping level
-    (district, AC, or the grand total row) so the numbers stay consistent:
+    """% Hearing Held, % Lapsed and % Parked for Final -- the derived columns
+    in the Notice & Hearing report, computed the same way at every grouping
+    level (district, AC, or the grand total row) so the numbers stay
+    consistent:
+      % Hearing Held = Hearing Held / Notice Delivered
       % Lapsed = Hearing Date Lapsed / Notice Delivered
       % Parked for Final = (Parked w.r.t. Notices Generated + Parked w.r.t.
                              Others) / Electors
     (safe_div already returns the ratio *100, e.g. 21.02 for 21.02%.)
     """
+    g["Hearing_Held_%"] = g.apply(
+        lambda r: safe_div(r["Hearing_Held"], r["Notice_Delivered"]), axis=1)
     g["Lapsed_%"] = g.apply(
         lambda r: safe_div(r["Hearing_Date_Lapsed"], r["Notice_Delivered"]), axis=1)
     g["Parked_Final_%"] = g.apply(
