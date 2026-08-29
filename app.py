@@ -1771,6 +1771,7 @@ if active_view == "fp":
                     "In Progress": f"{fmt_int(in_progress)} ({fmt_pct(safe_div(in_progress, total_received))})",
                     "Eroll Inclusion": f"{fmt_int(eroll_inclusion)} ({fmt_pct(safe_div(eroll_inclusion, total_received))})",
                     "Rejected": f"{fmt_int(rejected)} ({fmt_pct(safe_div(rejected, total_received))})",
+                    "Accepted": f"{fmt_int(accepted)} ({fmt_pct(safe_div(accepted, total_received))})",
                     "Hearing Scheduled": fmt_int(hearing_sched),
                 }
                 try:
