@@ -183,6 +183,9 @@ FORM_TYPE_LABELS = {
 # Short form (no parenthetical) -- used in compact contexts like the PDF's
 # filter-summary line, where "Form 7" reads better than the full label.
 FORM_TYPE_SHORT = {"FORM6": "Form 6", "FORM6A": "Form 6A", "FORM7": "Form 7", "FORM8": "Form 8"}
+# Natural workflow order for the Form Type-wise breakdown report (6, 6A, 7, 8
+# -- NOT alphabetical, which would wrongly put "FORM7" before "FORM6A").
+FORM_TYPE_ORDER = {"FORM6": 0, "FORM6A": 1, "FORM7": 2, "FORM8": 3}
 
 # Status columns as they appear in the raw Form_Processing.xlsx header
 # (natural workflow order). These 18 columns are mutually exclusive and sum
@@ -247,6 +250,34 @@ FP_COL_FORMATS.update({
     "ACs_Reporting": "{:,.0f}",
     "Inclusion_Rate_%": "{:.1f}%",
 })
+
+# --------------------------------------------------------------------------
+# Form Processing District-wise/AC-wise report -- Form Type-wise breakdown.
+# Matches the official "Form Processed Current Status - All Forms" report
+# layout exactly (per the user-supplied reference report): one row per
+# District (or AC) x Form Type combination, a "District/AC Form Total"
+# subtotal row after each group, and a final grand-Total row. This is the
+# report shown by default -- it replaced the older single-row-per-district/
+# AC summary (still available by selecting a single Form Type in the sidebar
+# filter, which collapses each group to one form type's row + its subtotal).
+# --------------------------------------------------------------------------
+FP_FORMTYPE_DIST_COLS = ["District_No", "District", "Form_Type", "Total_Received",
+                          "Hearing_Scheduled", "Rejected", "Accepted", "Eroll_Inclusion"]
+FP_FORMTYPE_AC_COLS = ["District_No", "District", "AC_No", "AC_Name", "Form_Type",
+                        "Total_Received", "Hearing_Scheduled", "Rejected", "Accepted", "Eroll_Inclusion"]
+FP_FORMTYPE_DIST_EXTRA_COLS = (["ACs_Reporting"]
+                                + [c for c in FP_STATUS_COLS if c not in FP_FORMTYPE_DIST_COLS]
+                                + ["In_Progress", "Inclusion_Rate_%"])
+FP_FORMTYPE_AC_EXTRA_COLS = ([c for c in FP_STATUS_COLS if c not in FP_FORMTYPE_AC_COLS]
+                              + ["In_Progress", "Inclusion_Rate_%"])
+# Header text matching the reference report's exact wording (plain
+# "replace underscore with space" would give "District No"/"Total Received").
+FP_FORMTYPE_COL_LABELS = {
+    "District_No": "District No.",
+    "District": "District Name",
+    "Form_Type": "Form Type",
+    "Total_Received": "Total Form Received",
+}
 
 # --------------------------------------------------------------------------
 # Difference Report: same columns as the Form Processing District-wise/
@@ -450,12 +481,14 @@ def load_notice_data(notice_path: str, electors_path: str):
         return None, None, "Electors.xlsx has no usable AC data rows."
     e["AC_No"] = e["AC_No"].astype(int)
     e["District"] = e["District"].apply(clean_str)
+    e["District_No"] = pd.to_numeric(e["District_No"], errors="coerce").fillna(0).astype(int)
     e["Electors"] = pd.to_numeric(e["Electors"], errors="coerce").fillna(0)
     e = e.drop_duplicates(subset=["AC_No"])
 
-    df = n.merge(e[["AC_No", "District", "Electors"]], on="AC_No", how="left")
+    df = n.merge(e[["AC_No", "District", "District_No", "Electors"]], on="AC_No", how="left")
     unmatched = int(df["District"].isna().sum())
     df["District"] = df["District"].fillna("Unassigned / AC Not Mapped")
+    df["District_No"] = df["District_No"].fillna(0).astype(int)
     df["Electors"] = df["Electors"].fillna(0)
 
     meta = {"n_acs": len(df), "unmatched_acs": unmatched, "last_updated": last_updated}
@@ -474,7 +507,19 @@ def build_ac_district_map(notice_df: pd.DataFrame):
 
 
 @st.cache_data(show_spinner=False)
-def load_form_processing(path: str, ac_district_map: dict):
+def build_ac_districtno_map(notice_df: pd.DataFrame):
+    """Derive AC -> District No. mapping (the fixed government district
+    numbering from Electors.xlsx) -- used to order the Form Type-wise
+    breakdown report exactly the way the official 'Form Processed Current
+    Status' report is ordered (by District No., not by volume)."""
+    if notice_df is None or notice_df.empty or "District_No" not in notice_df.columns:
+        return {}
+    m = notice_df[["AC_No", "District_No"]].drop_duplicates()
+    return dict(zip(m["AC_No"].astype(int), m["District_No"].astype(int)))
+
+
+@st.cache_data(show_spinner=False)
+def load_form_processing(path: str, ac_district_map: dict, ac_districtno_map: dict = None):
     """Load and clean Form_Processing.xlsx (sheet: Sheet1)."""
     try:
         raw_head = pd.read_excel(path, sheet_name=0, header=None, nrows=6)
@@ -526,6 +571,10 @@ def load_form_processing(path: str, ac_district_map: dict):
     df = df.drop_duplicates(subset=["AC No.", "Form Type"])
 
     df["District"] = df["AC No."].map(ac_district_map).fillna("Unassigned / AC Not Mapped")
+    if ac_districtno_map:
+        df["District_No"] = df["AC No."].map(ac_districtno_map).fillna(0).astype(int)
+    else:
+        df["District_No"] = 0
     df["Form_Type_Label"] = df["Form Type"].map(FORM_TYPE_LABELS).fillna(df["Form Type"])
 
     # Rename identifier + all 18 status columns to clean underscore names
@@ -572,6 +621,103 @@ def fp_ac_report(df: pd.DataFrame) -> pd.DataFrame:
     return (g.assign(_dist_total=dist_total)
              .sort_values(["_dist_total", "District", "Total_Received"], ascending=[False, True, False])
              .drop(columns="_dist_total"))
+
+
+def fp_total_row(rep: pd.DataFrame) -> pd.DataFrame:
+    """Grand-total row for the Form Processing District-wise/AC-wise report --
+    summed from the per-row numbers (not read off a sheet total), with
+    Inclusion_Rate_% recomputed from those summed totals rather than
+    averaged, so the Total row's percentage is internally consistent. Works
+    for both the District-wise report (has ACs_Reporting) and the AC-wise
+    report (has AC_No/AC_Name instead -- left blank on the Total row)."""
+    if rep is None or rep.empty:
+        return pd.DataFrame()
+    sum_cols = ["Total_Received"] + FP_STATUS_COLS + ["In_Progress"]
+    totals = {c: rep[c].sum() for c in sum_cols if c in rep.columns}
+    totals["District"] = "Total"
+    if "ACs_Reporting" in rep.columns:
+        totals["ACs_Reporting"] = rep["ACs_Reporting"].sum()
+    if "AC_No" in rep.columns:
+        totals["AC_No"] = ""
+    if "AC_Name" in rep.columns:
+        totals["AC_Name"] = ""
+    row = pd.DataFrame([totals])
+    row["Inclusion_Rate_%"] = row.apply(
+        lambda r: safe_div(r["Eroll_Inclusion"], r["Total_Received"]), axis=1)
+    return row
+
+
+def fp_district_formtype_report(df: pd.DataFrame) -> pd.DataFrame:
+    """District + Form Type breakdown, matching the official 'Form Processed
+    Current Status - All Forms' report layout exactly: districts ordered by
+    District No. (the fixed government numbering, NOT by volume), each
+    district's own Form Type rows in natural order (6, 6A, 7, 8), followed by
+    a 'District Form Total' subtotal row summed across that district's form
+    types. The boolean '_is_subtotal' column (not meant for display) marks
+    the subtotal rows so the caller can render them bold."""
+    if df.empty:
+        return df
+    agg_kwargs = {"ACs_Reporting": ("AC_No", "nunique"), "Total_Received": ("Total_Received", "sum")}
+    agg_kwargs.update({c: (c, "sum") for c in FP_STATUS_COLS})
+    g = df.groupby(["District_No", "District", "Form_Type"], as_index=False).agg(**agg_kwargs)
+    g["In_Progress"] = g[FP_INPROGRESS_COLS].sum(axis=1)
+    g["Inclusion_Rate_%"] = g.apply(lambda r: safe_div(r["Eroll_Inclusion"], r["Total_Received"]), axis=1)
+    g["_form_order"] = g["Form_Type"].map(FORM_TYPE_ORDER).fillna(99)
+    g = g.sort_values(["District_No", "_form_order"]).drop(columns="_form_order")
+
+    sum_cols = ["Total_Received"] + FP_STATUS_COLS + ["In_Progress"]
+    chunks = []
+    for (dno, dist), chunk in g.groupby(["District_No", "District"], sort=False):
+        chunk = chunk.copy()
+        chunk["_is_subtotal"] = False
+        chunks.append(chunk)
+        if len(chunk) <= 1:
+            continue  # only one Form Type row -- a subtotal identical to it would be redundant
+        subtotal = {c: chunk[c].sum() for c in sum_cols}
+        subtotal["ACs_Reporting"] = chunk["ACs_Reporting"].sum()
+        subtotal["District_No"] = dno
+        subtotal["District"] = dist
+        subtotal["Form_Type"] = "District Form Total"
+        subtotal["Inclusion_Rate_%"] = safe_div(subtotal["Eroll_Inclusion"], subtotal["Total_Received"])
+        subtotal["_is_subtotal"] = True
+        chunks.append(pd.DataFrame([subtotal]))
+    return pd.concat(chunks, ignore_index=True)
+
+
+def fp_ac_formtype_report(df: pd.DataFrame) -> pd.DataFrame:
+    """AC + Form Type breakdown -- same idea as fp_district_formtype_report()
+    one level deeper: districts ordered by District No., ACs within a
+    district ordered by AC No., each AC's Form Type rows in natural order (6,
+    6A, 7, 8), followed by an 'AC Form Total' subtotal row. Same
+    '_is_subtotal' marker convention."""
+    if df.empty:
+        return df
+    agg_kwargs = {"Total_Received": ("Total_Received", "sum")}
+    agg_kwargs.update({c: (c, "sum") for c in FP_STATUS_COLS})
+    g = df.groupby(["District_No", "District", "AC_No", "AC_Name", "Form_Type"], as_index=False).agg(**agg_kwargs)
+    g["In_Progress"] = g[FP_INPROGRESS_COLS].sum(axis=1)
+    g["Inclusion_Rate_%"] = g.apply(lambda r: safe_div(r["Eroll_Inclusion"], r["Total_Received"]), axis=1)
+    g["_form_order"] = g["Form_Type"].map(FORM_TYPE_ORDER).fillna(99)
+    g = g.sort_values(["District_No", "AC_No", "_form_order"]).drop(columns="_form_order")
+
+    sum_cols = ["Total_Received"] + FP_STATUS_COLS + ["In_Progress"]
+    chunks = []
+    for (dno, dist, acno, acname), chunk in g.groupby(["District_No", "District", "AC_No", "AC_Name"], sort=False):
+        chunk = chunk.copy()
+        chunk["_is_subtotal"] = False
+        chunks.append(chunk)
+        if len(chunk) <= 1:
+            continue  # only one Form Type row -- a subtotal identical to it would be redundant
+        subtotal = {c: chunk[c].sum() for c in sum_cols}
+        subtotal["District_No"] = dno
+        subtotal["District"] = dist
+        subtotal["AC_No"] = acno
+        subtotal["AC_Name"] = acname
+        subtotal["Form_Type"] = "AC Form Total"
+        subtotal["Inclusion_Rate_%"] = safe_div(subtotal["Eroll_Inclusion"], subtotal["Total_Received"])
+        subtotal["_is_subtotal"] = True
+        chunks.append(pd.DataFrame([subtotal]))
+    return pd.concat(chunks, ignore_index=True)
 
 
 def fp_diff_report(new_rep: pd.DataFrame, old_rep: pd.DataFrame, key_cols: list) -> pd.DataFrame:
@@ -985,10 +1131,16 @@ def render_html_table(df: pd.DataFrame, cols: list, formats: dict = None, captio
     "replace underscore with space" name isn't the wording the table should
     show. total_row: optional {column: value} for a bold grand-total row
     appended after the regular rows (formatted with the same `formats`).
+    If `df` itself has a boolean "_is_subtotal" column (not included in
+    `cols`, so never displayed), those rows are rendered bold in place --
+    used by the Form Type-wise breakdown report for its per-district/per-AC
+    subtotal rows, interspersed among the regular rows rather than only at
+    the very end.
     """
     formats = formats or {}
     labels = labels or {}
     view = df[cols].copy()
+    subtotal_flags = df["_is_subtotal"] if "_is_subtotal" in df.columns else None
     numeric_cols = set(view.select_dtypes(include="number").columns)
 
     def _label(c):
@@ -1017,7 +1169,10 @@ def render_html_table(df: pd.DataFrame, cols: list, formats: dict = None, captio
                 cells.append(f'<td style="{style}">{disp}</td>')
         return "<tr>" + "".join(cells) + "</tr>"
 
-    body_rows = [_render_row(row.to_dict()) for _, row in view.iterrows()]
+    body_rows = [
+        _render_row(row.to_dict(), bold=bool(subtotal_flags.loc[idx]) if subtotal_flags is not None else False)
+        for idx, row in view.iterrows()
+    ]
     if total_row:
         body_rows.append(_render_row(total_row, bold=True))
 
@@ -1051,6 +1206,10 @@ def build_excel_download(sheets: dict) -> bytes:
                 pd.DataFrame({"Message": ["No data available for the selected filters."]}).to_excel(
                     writer, sheet_name=safe_name, index=False)
                 continue
+            # Internal-only helper columns (e.g. "_is_subtotal", used to mark
+            # bold subtotal rows on screen/PDF) are never meant to reach the
+            # exported spreadsheet.
+            df = df.drop(columns=[c for c in df.columns if c.startswith("_")], errors="ignore")
             df.to_excel(writer, sheet_name=safe_name, index=False)
             if engine == "xlsxwriter":
                 wb = writer.book
@@ -1095,12 +1254,12 @@ def _fig_to_png(fig, width=1000, height=480):
 
 def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
                       charts, district_cols=None, ac_cols=None, col_labels=None,
-                      district_total_row=None, red_below=None):
+                      district_total_row=None, ac_total_row=None, red_below=None):
     """Builds a professional MIS PDF report and returns bytes.
 
     col_labels: optional {column: header text} override (see render_html_table).
-    district_total_row: optional {column: value} bold grand-total row appended
-    to the District-wise table.
+    district_total_row / ac_total_row: optional {column: value} bold
+    grand-total row appended to the District-wise / AC-wise table respectively.
     red_below: optional {column: threshold} -- any District-wise/AC-wise table
     cell in that column (including the Total row) whose numeric value is below
     the threshold is rendered in red text, e.g. {"Parked_Final_%": 80} flags
@@ -1211,7 +1370,7 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
 
     NARROW_COLS = {"AC_No", "Parts", "District_No"}
     MEDIUM_COLS = {"ACs_Reporting"}  # short numbers, but a longer header ("ACs Reporting")
-    WIDE_COLS = {"District", "AC_Name"}
+    WIDE_COLS = {"District", "AC_Name", "Form_Type"}
     cell_style = ParagraphStyle("MISCell", fontName="Helvetica", fontSize=9.5, leading=12)
     cell_style_r = ParagraphStyle("MISCellR", parent=cell_style, alignment=2)  # right-align
     # Red variants -- used for red_below flagged cells (e.g. % Parked for
@@ -1244,8 +1403,15 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
             return False
 
     def df_to_table(df, cols, max_rows=None, total_row=None, red_below=None):
+        # "_is_subtotal" (if present) marks rows to render bold + tinted --
+        # the Form Type-wise breakdown report's per-district/per-AC subtotal
+        # rows, interspersed among the regular rows rather than only at the
+        # very end (unlike total_row, which is always the final row).
+        subtotal_flags = df["_is_subtotal"] if "_is_subtotal" in df.columns else None
         cols = [c for c in cols if c in df.columns]
         show = df[cols].head(max_rows).copy() if max_rows else df[cols].copy()
+        if subtotal_flags is not None:
+            subtotal_flags = subtotal_flags.loc[show.index]
 
         weights = []
         for c in cols:
@@ -1262,13 +1428,19 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
 
         header = [Paragraph(col_labels.get(c, c.replace("_", " ")), header_cell_style) for c in cols]
         data_rows = []
-        for _, row in show.iterrows():
+        subtotal_row_nums = []
+        for i, (_, row) in enumerate(show.iterrows()):
+            is_subtotal = bool(subtotal_flags.iloc[i]) if subtotal_flags is not None else False
+            if is_subtotal:
+                subtotal_row_nums.append(i + 1)  # +1 for the header row
             cells = []
             for c in cols:
                 text = _fmt_cell(row[c], c)
                 is_wide = c in WIDE_COLS or c == "District"
                 if _below_threshold(row[c], c, red_below):
                     style = cell_style_red if is_wide else cell_style_red_r
+                elif is_subtotal:
+                    style = total_row_style if is_wide else total_row_style_r
                 else:
                     style = cell_style if is_wide else cell_style_r
                 cells.append(Paragraph(text, style))
@@ -1285,6 +1457,8 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
             ("LEFTPADDING", (0, 0), (-1, -1), 5),
             ("RIGHTPADDING", (0, 0), (-1, -1), 5),
         ]
+        for r in subtotal_row_nums:
+            style_cmds.append(("BACKGROUND", (0, r), (-1, r), colors.HexColor("#EEF3FC")))
 
         if total_row:
             trow = []
@@ -1316,7 +1490,7 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
     if ac_df is not None and not ac_df.empty and ac_cols:
         _section_gap()
         story.append(Paragraph("<b>AC-wise Report</b>", h2_style))
-        story.append(df_to_table(ac_df, ac_cols, red_below=red_below))
+        story.append(df_to_table(ac_df, ac_cols, total_row=ac_total_row, red_below=red_below))
         section_added = True
 
     if charts:
@@ -1357,8 +1531,9 @@ st.markdown(f"""
 
 nh_df, nh_meta, nh_err = load_notice_data(NOTICE_FILE, ELECTORS_FILE)
 ac_map = build_ac_district_map(nh_df) if nh_df is not None else {}
-fp_df, fp_meta, fp_err = load_form_processing(FORM_PROCESSING_FILE, ac_map)
-fp_old_df, fp_old_meta, fp_old_err = load_form_processing(FORM_PROCESSING_OLD_FILE, ac_map)
+ac_districtno_map = build_ac_districtno_map(nh_df) if nh_df is not None else {}
+fp_df, fp_meta, fp_err = load_form_processing(FORM_PROCESSING_FILE, ac_map, ac_districtno_map)
+fp_old_df, fp_old_meta, fp_old_err = load_form_processing(FORM_PROCESSING_OLD_FILE, ac_map, ac_districtno_map)
 
 with st.sidebar:
     st.markdown("### \U0001F4CB Dashboard Controls")
@@ -1510,26 +1685,34 @@ if active_view == "fp":
                     st.plotly_chart(apply_plotly_theme(fig), use_container_width=True)
 
             # ------------------ District-wise report ------------------
+            # Form Type-wise breakdown by default (matches the official "Form
+            # Processed Current Status" report layout) -- fp_dist_rep (flat,
+            # one row per district, all form types summed) is kept only for
+            # the grand-Total row and the chart below, not for display.
             section_title("District-wise Report")
             fp_dist_rep = fp_district_report(filtered)
-            fp_dist_display_cols = FP_DIST_BASE_COLS + FP_DIST_EXTRA_COLS
-            sort_opt = st.selectbox("Sort district report by", fp_dist_display_cols[1:],
-                                     index=fp_dist_display_cols.index("Total_Received") - 1, key="fp_dist_sort")
-            fp_dist_view = fp_dist_rep[fp_dist_display_cols].sort_values(sort_opt, ascending=False)
+            fp_dist_formtype_rep = fp_district_formtype_report(filtered)
             fp_dist_extra_pick = st.multiselect(
                 "Add more columns (optional) -- every column below is exactly as named in Form_Processing.xlsx",
-                FP_DIST_EXTRA_COLS, default=[], key="fp_dist_extra_cols",
+                FP_FORMTYPE_DIST_EXTRA_COLS, default=[], key="fp_dist_extra_cols",
                 format_func=lambda c: c.replace("_", " "),
             )
+            fp_dist_total = fp_total_row(fp_dist_rep)
+            fp_dist_total_dict = fp_dist_total.iloc[0].to_dict() if not fp_dist_total.empty else None
+            if fp_dist_total_dict:
+                fp_dist_total_dict["Form_Type"] = "All District Form Total"
             render_html_table(
-                fp_dist_view, FP_DIST_BASE_COLS + fp_dist_extra_pick,
-                formats=FP_COL_FORMATS,
-                caption="Columns match Form_Processing.xlsx exactly (In Progress/Inclusion Rate are optional, "
-                        "derived totals -- add them above). Full column set is also in the Excel/PDF export below.",
+                fp_dist_formtype_rep, FP_FORMTYPE_DIST_COLS + fp_dist_extra_pick,
+                formats=FP_COL_FORMATS, labels=FP_FORMTYPE_COL_LABELS,
+                total_row=fp_dist_total_dict,
+                caption="Matches the official 'Form Processed Current Status' report: each district's Form "
+                        "6/6A/7/8 rows, its District Form Total, then the overall Total at the very end. Pick a "
+                        "single Form Type in the sidebar filter to collapse this back to one row per district.",
             )
 
             if SHOW_CHARTS:
-                fig = px.bar(fp_dist_view, x="District", y=["Total_Received", "Eroll_Inclusion"],
+                fp_dist_chart_view = fp_dist_rep.sort_values("Total_Received", ascending=False)
+                fig = px.bar(fp_dist_chart_view, x="District", y=["Total_Received", "Eroll_Inclusion"],
                              barmode="group", title="District Comparison: Received vs Eroll Inclusion",
                              color_discrete_sequence=CHART_COLORWAY, labels={"value": "Forms", "variable": ""})
                 st.plotly_chart(apply_plotly_theme(fig, height=360), use_container_width=True)
@@ -1541,17 +1724,23 @@ if active_view == "fp":
                                          key="fp_ac_district_pick")
             ac_scope_df = filtered if ac_dist_pick == "All Districts" else filtered[filtered["District"] == ac_dist_pick]
             fp_ac_rep = fp_ac_report(ac_scope_df)
-            fp_ac_display_cols = FP_AC_BASE_COLS + FP_AC_EXTRA_COLS
+            fp_ac_formtype_rep = fp_ac_formtype_report(ac_scope_df)
             fp_ac_extra_pick = st.multiselect(
                 "Add more columns (optional) -- every column below is exactly as named in Form_Processing.xlsx",
-                FP_AC_EXTRA_COLS, default=[], key="fp_ac_extra_cols",
+                FP_FORMTYPE_AC_EXTRA_COLS, default=[], key="fp_ac_extra_cols",
                 format_func=lambda c: c.replace("_", " "),
             )
+            fp_ac_total = fp_total_row(fp_ac_rep)
+            fp_ac_total_dict = fp_ac_total.iloc[0].to_dict() if not fp_ac_total.empty else None
+            if fp_ac_total_dict:
+                fp_ac_total_dict["Form_Type"] = "All AC Form Total"
             render_html_table(
-                fp_ac_rep, FP_AC_BASE_COLS + fp_ac_extra_pick,
-                formats=FP_COL_FORMATS,
-                caption="Columns match Form_Processing.xlsx exactly (In Progress/Inclusion Rate are optional, "
-                        "derived totals -- add them above). Full column set is also in the Excel/PDF export below.",
+                fp_ac_formtype_rep, FP_FORMTYPE_AC_COLS + fp_ac_extra_pick,
+                formats=FP_COL_FORMATS, labels=FP_FORMTYPE_COL_LABELS,
+                total_row=fp_ac_total_dict,
+                caption="Matches the official 'Form Processed Current Status' report: each AC's Form 6/6A/7/8 "
+                        "rows, its AC Form Total, then the overall Total at the very end. Pick a single Form "
+                        "Type in the sidebar filter to collapse this back to one row per AC.",
             )
 
             if SHOW_CHARTS:
@@ -1568,8 +1757,8 @@ if active_view == "fp":
             with dcol1:
                 excel_bytes = build_excel_download({
                     "Filtered Records": filtered.drop(columns=["Form_Type_Label"], errors="ignore"),
-                    "District Report": fp_dist_rep,
-                    "AC Report": fp_ac_rep,
+                    "District Report": fp_dist_formtype_rep,
+                    "AC Report": fp_ac_formtype_rep,
                 })
                 st.download_button("\U0001F4E5 Download Filtered Report (Excel)", excel_bytes,
                                     file_name="Form_Processing_Filtered_Report.xlsx",
@@ -1589,13 +1778,11 @@ if active_view == "fp":
                         title="Form Processing Report",
                         subtitle=f"Report period: {fp_meta.get('report_period') or 'N/A'}",
                         filters_desc=fp_filters_desc, kpis=kpis_for_pdf,
-                        district_df=fp_dist_view, ac_df=fp_ac_rep,
+                        district_df=fp_dist_formtype_rep, ac_df=fp_ac_formtype_rep,
                         charts=[],
-                        # PDF stays print-friendly with the same base columns
-                        # shown on screen by default (a PDF page can't fit all
-                        # ~27 columns readably); the full set is in the Excel
-                        # export below and on screen via "Add more columns".
-                        district_cols=FP_DIST_BASE_COLS, ac_cols=FP_AC_BASE_COLS,
+                        district_cols=FP_FORMTYPE_DIST_COLS, ac_cols=FP_FORMTYPE_AC_COLS,
+                        col_labels=FP_FORMTYPE_COL_LABELS,
+                        district_total_row=fp_dist_total_dict, ac_total_row=fp_ac_total_dict,
                     )
                     st.download_button("\U0001F4C4 Download PDF Report (full)", pdf_bytes,
                                         file_name="Form_Processing_Report.pdf",
@@ -1606,7 +1793,7 @@ if active_view == "fp":
             st.caption("District-wise and AC-wise reports on their own, in Excel or PDF:")
             dcol3, dcol4, dcol5, dcol6 = st.columns(4)
             with dcol3:
-                dist_excel = build_excel_download({"District Report": fp_dist_rep})
+                dist_excel = build_excel_download({"District Report": fp_dist_formtype_rep})
                 st.download_button("\U0001F4E5 District-wise (Excel)", dist_excel,
                                     file_name="Form_Processing_District_Report.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1617,8 +1804,9 @@ if active_view == "fp":
                         title="Form Processing Report - District-wise",
                         subtitle=f"Report period: {fp_meta.get('report_period') or 'N/A'}",
                         filters_desc=fp_filters_desc, kpis=None,
-                        district_df=fp_dist_view, ac_df=None, charts=[],
-                        district_cols=FP_DIST_BASE_COLS,
+                        district_df=fp_dist_formtype_rep, ac_df=None, charts=[],
+                        district_cols=FP_FORMTYPE_DIST_COLS, col_labels=FP_FORMTYPE_COL_LABELS,
+                        district_total_row=fp_dist_total_dict,
                     )
                     st.download_button("\U0001F4C4 District-wise (PDF)", dist_pdf_bytes,
                                         file_name="Form_Processing_District_Report.pdf",
@@ -1626,7 +1814,7 @@ if active_view == "fp":
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"PDF generation failed: {exc}")
             with dcol5:
-                ac_excel = build_excel_download({"AC Report": fp_ac_rep})
+                ac_excel = build_excel_download({"AC Report": fp_ac_formtype_rep})
                 st.download_button("\U0001F4E5 AC-wise (Excel)", ac_excel,
                                     file_name="Form_Processing_AC_Report.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -1637,8 +1825,9 @@ if active_view == "fp":
                         title="Form Processing Report - AC-wise",
                         subtitle=f"Report period: {fp_meta.get('report_period') or 'N/A'}",
                         filters_desc=fp_filters_desc, kpis=None,
-                        district_df=None, ac_df=fp_ac_rep, charts=[],
-                        ac_cols=FP_AC_BASE_COLS,
+                        district_df=None, ac_df=fp_ac_formtype_rep, charts=[],
+                        ac_cols=FP_FORMTYPE_AC_COLS, col_labels=FP_FORMTYPE_COL_LABELS,
+                        ac_total_row=fp_ac_total_dict,
                     )
                     st.download_button("\U0001F4C4 AC-wise (PDF)", ac_pdf_bytes,
                                         file_name="Form_Processing_AC_Report.pdf",
