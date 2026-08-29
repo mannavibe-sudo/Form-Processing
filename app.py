@@ -982,6 +982,21 @@ def inject_css():
         .kpi-value {{ color: {BRAND_TEXT}; font-size: 1.65rem; font-weight: 800; line-height: 1.1; }}
         .kpi-sub {{ font-size: 0.82rem; margin-top: 0.3rem; font-weight: 600; }}
 
+        /* Compact variant: used for dense multi-row KPI grids (e.g. Form
+           Processing's Total/Form6/Form7/Form8 breakdown) where many small
+           cards need to fit without overwhelming the page. */
+        .kpi-card-compact {{
+            padding: 0.55rem 0.65rem; border-radius: 10px; border-left-width: 4px;
+            box-shadow: 0 4px 12px rgba(20,30,60,0.06);
+        }}
+        .kpi-card-compact .kpi-label {{ font-size: 0.62rem; margin-bottom: 0.15rem; }}
+        .kpi-card-compact .kpi-value {{ font-size: 1.05rem; line-height: 1.05; }}
+        .kpi-row-title {{
+            color: {BRAND_TEXT}; font-size: 0.85rem; font-weight: 700;
+            margin: 0.65rem 0 0.3rem 0.1rem; opacity: 0.85;
+        }}
+        .kpi-row-title:first-of-type {{ margin-top: 0.1rem; }}
+
         .section-title {{
             font-size: 1.05rem; font-weight: 700; color: {BRAND_TEXT};
             margin: 1.4rem 0 0.6rem 0; padding-bottom: 0.35rem;
@@ -1042,6 +1057,9 @@ def inject_css():
             .kpi-card {{ padding: 0.8rem 0.9rem; border-radius: 12px; }}
             .kpi-value {{ font-size: 1.28rem; }}
             .kpi-label {{ font-size: 0.68rem; }}
+            .kpi-card-compact {{ padding: 0.45rem 0.5rem; border-radius: 8px; }}
+            .kpi-card-compact .kpi-value {{ font-size: 0.88rem; }}
+            .kpi-card-compact .kpi-label {{ font-size: 0.56rem; }}
             .section-title {{ font-size: 0.95rem; margin: 1.1rem 0 0.5rem 0; }}
             .glass-table {{ font-size: 0.78rem; }}
             .glass-table thead th, .glass-table tbody td {{ padding: 0.45rem 0.6rem; }}
@@ -1056,18 +1074,29 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     return f"rgba({r},{g},{b},{alpha})"
 
 
-def kpi_card(col, label, value, sub=None, color=BRAND_PRIMARY):
+def kpi_card(col, label, value, sub=None, color=BRAND_PRIMARY, compact=False):
     with col:
         tint = _hex_to_rgba(color, 0.12)
         sub_html = f'<div class="kpi-sub" style="color:{color}">{sub}</div>' if sub else ""
+        card_class = "kpi-card kpi-card-compact" if compact else "kpi-card"
         st.markdown(f"""
-        <div class="kpi-card" style="border-left-color:{color};
+        <div class="{card_class}" style="border-left-color:{color};
              background-image: linear-gradient(135deg, {tint} 0%, rgba(255,255,255,0) 70%);">
             <div class="kpi-label">{label}</div>
             <div class="kpi-value">{value}</div>
             {sub_html}
         </div>
         """, unsafe_allow_html=True)
+
+
+def kpi_row(title, values, color=BRAND_PRIMARY):
+    """Render one compact KPI row: a small row title followed by 5 metric
+    cards (Receiving / Hearing / Reject / Accept / Inclusion)."""
+    st.markdown(f'<div class="kpi-row-title">{title}</div>', unsafe_allow_html=True)
+    cols = st.columns(5, gap="small")
+    labels = ["Receiving", "Hearing", "Reject", "Accept", "Inclusion"]
+    for c, lbl, val in zip(cols, labels, values):
+        kpi_card(c, lbl, fmt_int(val), color=color, compact=True)
 
 
 def section_title(text):
@@ -1620,23 +1649,20 @@ if active_view == "fp":
             hearing_sched = filtered["Hearing_Scheduled"].sum()
 
             section_title("Key Performance Indicators")
-            c1, c2, c3, c4 = st.columns(4, gap="medium")
-            kpi_card(c1, "Total Forms Received", fmt_int(total_received),
-                     f"{filtered['AC_No'].nunique()} ACs · {filtered['Form_Type'].nunique()} form types")
-            kpi_card(c2, "Unprocessed", fmt_int(unprocessed),
-                     f"{fmt_pct(safe_div(unprocessed, total_received))} of received", color=BRAND_DANGER)
-            kpi_card(c3, "In Progress", fmt_int(in_progress),
-                     f"{fmt_pct(safe_div(in_progress, total_received))} of received", color=BRAND_WARN)
-            kpi_card(c4, "Eroll Inclusion", fmt_int(eroll_inclusion),
-                     f"{fmt_pct(safe_div(eroll_inclusion, total_received))} inclusion rate", color=BRAND_ACCENT)
 
-            c5, c6, c7 = st.columns(3, gap="medium")
-            kpi_card(c5, "Rejected", fmt_int(rejected),
-                     f"{fmt_pct(safe_div(rejected, total_received))} rejection rate", color=BRAND_DANGER)
-            kpi_card(c6, "Accepted", fmt_int(accepted),
-                     f"{fmt_pct(safe_div(accepted, total_received))} of received")
-            kpi_card(c7, "Hearing Scheduled", fmt_int(hearing_sched),
-                     f"{fmt_pct(safe_div(hearing_sched, total_received))} of received", color=BRAND_WARN)
+            def _fp_row_values(df_row_scope):
+                return [
+                    df_row_scope["Total_Received"].sum(),
+                    df_row_scope["Hearing_Scheduled"].sum(),
+                    df_row_scope["Rejected"].sum(),
+                    df_row_scope["Accepted"].sum(),
+                    df_row_scope["Eroll_Inclusion"].sum(),
+                ]
+
+            kpi_row("Total (All Forms)", _fp_row_values(filtered), color=BRAND_PRIMARY)
+            kpi_row("Form 6", _fp_row_values(filtered[filtered["Form_Type"] == "FORM6"]), color=BRAND_ACCENT)
+            kpi_row("Form 7", _fp_row_values(filtered[filtered["Form_Type"] == "FORM7"]), color=BRAND_WARN)
+            kpi_row("Form 8", _fp_row_values(filtered[filtered["Form_Type"] == "FORM8"]), color=BRAND_DANGER)
 
             st.caption(
                 "ℹ️ **In Progress** is a calculated total, not a column in Form_Processing.xlsx -- "
