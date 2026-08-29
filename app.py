@@ -162,6 +162,9 @@ NOTICE_COL_FORMATS = {
     "Parked_Notices_Generated": "{:,.0f}", "Parked_Others": "{:,.0f}",
     "Parked_Final_%": "{:.2f}",
 }
+# PDF-only: % Parked for Final figures under 80% are flagged in red text in
+# the District-wise/AC-wise tables (on-screen tables are unaffected).
+NOTICE_RED_BELOW = {"Parked_Final_%": 80}
 # Form Processing's screen columns are defined further below, right after
 # FP_STATUS_COLS -- they're built from that list (every raw status column
 # from the sheet), so they can't be defined before it exists.
@@ -1092,12 +1095,16 @@ def _fig_to_png(fig, width=1000, height=480):
 
 def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
                       charts, district_cols=None, ac_cols=None, col_labels=None,
-                      district_total_row=None):
+                      district_total_row=None, red_below=None):
     """Builds a professional MIS PDF report and returns bytes.
 
     col_labels: optional {column: header text} override (see render_html_table).
     district_total_row: optional {column: value} bold grand-total row appended
     to the District-wise table.
+    red_below: optional {column: threshold} -- any District-wise/AC-wise table
+    cell in that column (including the Total row) whose numeric value is below
+    the threshold is rendered in red text, e.g. {"Parked_Final_%": 80} flags
+    every % Parked for Final figure under 80%.
     """
     col_labels = col_labels or {}
     from reportlab.lib import colors
@@ -1207,6 +1214,10 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
     WIDE_COLS = {"District", "AC_Name"}
     cell_style = ParagraphStyle("MISCell", fontName="Helvetica", fontSize=9.5, leading=12)
     cell_style_r = ParagraphStyle("MISCellR", parent=cell_style, alignment=2)  # right-align
+    # Red variants -- used for red_below flagged cells (e.g. % Parked for
+    # Final under 80%) so the low figure stands out in the printed report.
+    cell_style_red = ParagraphStyle("MISCellRed", parent=cell_style, textColor=colors.HexColor("#C0392B"))
+    cell_style_red_r = ParagraphStyle("MISCellRedR", parent=cell_style_r, textColor=colors.HexColor("#C0392B"))
     header_cell_style = ParagraphStyle("MISCellH", fontName="Helvetica-Bold", fontSize=9.7,
                                         leading=12, textColor=colors.white)
 
@@ -1221,8 +1232,18 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
 
     total_row_style = ParagraphStyle("MISCellTotal", parent=cell_style, fontName="Helvetica-Bold")
     total_row_style_r = ParagraphStyle("MISCellTotalR", parent=cell_style_r, fontName="Helvetica-Bold")
+    total_row_style_red_r = ParagraphStyle("MISCellTotalRedR", parent=total_row_style_r,
+                                            textColor=colors.HexColor("#C0392B"))
 
-    def df_to_table(df, cols, max_rows=None, total_row=None):
+    def _below_threshold(val, col, red_below):
+        if not red_below or col not in red_below:
+            return False
+        try:
+            return float(val) < red_below[col]
+        except (TypeError, ValueError):
+            return False
+
+    def df_to_table(df, cols, max_rows=None, total_row=None, red_below=None):
         cols = [c for c in cols if c in df.columns]
         show = df[cols].head(max_rows).copy() if max_rows else df[cols].copy()
 
@@ -1245,7 +1266,11 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
             cells = []
             for c in cols:
                 text = _fmt_cell(row[c], c)
-                style = cell_style if c in WIDE_COLS or c == "District" else cell_style_r
+                is_wide = c in WIDE_COLS or c == "District"
+                if _below_threshold(row[c], c, red_below):
+                    style = cell_style_red if is_wide else cell_style_red_r
+                else:
+                    style = cell_style if is_wide else cell_style_r
                 cells.append(Paragraph(text, style))
             data_rows.append(cells)
         data = [header] + data_rows
@@ -1266,7 +1291,11 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
             for c in cols:
                 val = total_row.get(c)
                 text = _fmt_cell(val, c) if val is not None else ""
-                style = total_row_style if c in WIDE_COLS or c == "District" else total_row_style_r
+                is_wide = c in WIDE_COLS or c == "District"
+                if val is not None and _below_threshold(val, c, red_below):
+                    style = total_row_style_red_r if not is_wide else total_row_style
+                else:
+                    style = total_row_style if is_wide else total_row_style_r
                 trow.append(Paragraph(text, style))
             data.append(trow)
             last = len(data) - 1
@@ -1280,13 +1309,14 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
     if district_df is not None and not district_df.empty and district_cols:
         _section_gap()
         story.append(Paragraph("<b>District-wise Report</b>", h2_style))
-        story.append(df_to_table(district_df, district_cols, total_row=district_total_row))
+        story.append(df_to_table(district_df, district_cols, total_row=district_total_row,
+                                  red_below=red_below))
         section_added = True
 
     if ac_df is not None and not ac_df.empty and ac_cols:
         _section_gap()
         story.append(Paragraph("<b>AC-wise Report</b>", h2_style))
-        story.append(df_to_table(ac_df, ac_cols))
+        story.append(df_to_table(ac_df, ac_cols, red_below=red_below))
         section_added = True
 
     if charts:
@@ -1806,6 +1836,7 @@ elif active_view == "nh":
                         district_cols=NOTICE_DIST_COLS, ac_cols=NOTICE_AC_COLS,
                         col_labels=NOTICE_COL_LABELS,
                         district_total_row=nh_dist_total.iloc[0].to_dict() if not nh_dist_total.empty else None,
+                        red_below=NOTICE_RED_BELOW,
                     )
                     st.download_button("\U0001F4C4 Download PDF Report (full)", pdf_bytes2,
                                         file_name="Notice_Hearing_Report.pdf",
@@ -1830,6 +1861,7 @@ elif active_view == "nh":
                         district_df=nh_dist_view, ac_df=None, charts=[],
                         district_cols=NOTICE_DIST_COLS, col_labels=NOTICE_COL_LABELS,
                         district_total_row=nh_dist_total.iloc[0].to_dict() if not nh_dist_total.empty else None,
+                        red_below=NOTICE_RED_BELOW,
                     )
                     st.download_button("\U0001F4C4 District-wise (PDF)", nh_dist_pdf_bytes,
                                         file_name="Notice_Hearing_District_Report.pdf",
@@ -1850,6 +1882,7 @@ elif active_view == "nh":
                         filters_desc=nh_filters_desc, kpis=None,
                         district_df=None, ac_df=nh_ac_rep, charts=[],
                         ac_cols=NOTICE_AC_COLS, col_labels=NOTICE_COL_LABELS,
+                        red_below=NOTICE_RED_BELOW,
                     )
                     st.download_button("\U0001F4C4 AC-wise (PDF)", nh_ac_pdf_bytes,
                                         file_name="Notice_Hearing_AC_Report.pdf",
