@@ -1283,7 +1283,8 @@ def _fig_to_png(fig, width=1000, height=480):
 
 def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
                       charts, district_cols=None, ac_cols=None, col_labels=None,
-                      district_total_row=None, ac_total_row=None, red_below=None):
+                      district_total_row=None, ac_total_row=None, red_below=None,
+                      kpi_groups=None):
     """Builds a professional MIS PDF report and returns bytes.
 
     col_labels: optional {column: header text} override (see render_html_table).
@@ -1293,6 +1294,11 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
     cell in that column (including the Total row) whose numeric value is below
     the threshold is rendered in red text, e.g. {"Parked_Final_%": 80} flags
     every % Parked for Final figure under 80%.
+    kpi_groups: optional list of (group_title, {label: value}) tuples -- when
+    given, this renders the Key Performance Summary as one small metrics row
+    per group (e.g. Total / Form 6 / Form 7 / Form 8), mirroring the on-screen
+    multi-row KPI grid, instead of the flat `kpis` grid. Takes precedence over
+    `kpis` when both are supplied.
     """
     col_labels = col_labels or {}
     from reportlab.lib import colors
@@ -1358,7 +1364,45 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
         if section_added:
             story.append(Spacer(1, 5))
 
-    if kpis:
+    if kpi_groups:
+        _section_gap()
+        story.append(Paragraph("<b>Key Performance Summary</b>", h2_style))
+        # One small metrics strip per group (Total / Form 6 / Form 7 / Form 8)
+        # -- mirrors the on-screen multi-row KPI grid instead of one flat list.
+        kpi_group_title_style = ParagraphStyle("MISKpiGroupTitle", fontName="Helvetica-Bold",
+                                                fontSize=9.3, leading=11,
+                                                textColor=colors.HexColor(BRAND_PRIMARY_DARK),
+                                                spaceBefore=2, spaceAfter=1)
+        kpi_label_style = ParagraphStyle("MISKpiLabel", fontName="Helvetica-Bold", fontSize=8.3,
+                                          leading=10, textColor=colors.white)
+        kpi_value_style = ParagraphStyle("MISKpiValue", fontName="Helvetica-Bold", fontSize=10.3,
+                                          leading=12.5, textColor=colors.HexColor(BRAND_PRIMARY_DARK))
+        for gi, (group_title, metrics) in enumerate(kpi_groups):
+            items = list(metrics.items())
+            if not items:
+                continue
+            col_w = doc.width / len(items)
+            story.append(Paragraph(group_title, kpi_group_title_style))
+            label_row = [Paragraph(str(k), kpi_label_style) for k, v in items]
+            value_row = [Paragraph(str(v), kpi_value_style) for k, v in items]
+            t = Table([label_row, value_row], colWidths=[col_w] * len(items))
+            t.setStyle(TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor(BRAND_PRIMARY)),
+                ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#EEF3FC")),
+                ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#D5DCE8")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("TOPPADDING", (0, 0), (-1, 0), 3),
+                ("BOTTOMPADDING", (0, 0), (-1, 0), 3),
+                ("TOPPADDING", (0, 1), (-1, 1), 4),
+                ("BOTTOMPADDING", (0, 1), (-1, 1), 5),
+                ("LEFTPADDING", (0, 0), (-1, -1), 6),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 6),
+            ]))
+            story.append(t)
+            if gi < len(kpi_groups) - 1:
+                story.append(Spacer(1, 3))
+        section_added = True
+    elif kpis:
         _section_gap()
         story.append(Paragraph("<b>Key Performance Summary</b>", h2_style))
         # A wide grid (up to 4 metrics per row: label row + value row) instead
@@ -1791,20 +1835,26 @@ if active_view == "fp":
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     use_container_width=True)
             with dcol2:
-                kpis_for_pdf = {
-                    "Total Forms Received": fmt_int(total_received),
-                    "Unprocessed": f"{fmt_int(unprocessed)} ({fmt_pct(safe_div(unprocessed, total_received))})",
-                    "In Progress": f"{fmt_int(in_progress)} ({fmt_pct(safe_div(in_progress, total_received))})",
-                    "Eroll Inclusion": f"{fmt_int(eroll_inclusion)} ({fmt_pct(safe_div(eroll_inclusion, total_received))})",
-                    "Rejected": f"{fmt_int(rejected)} ({fmt_pct(safe_div(rejected, total_received))})",
-                    "Accepted": f"{fmt_int(accepted)} ({fmt_pct(safe_div(accepted, total_received))})",
-                    "Hearing Scheduled": fmt_int(hearing_sched),
-                }
+                def _fp_kpi_group(row_scope):
+                    vals = _fp_row_values(row_scope)
+                    return {
+                        "Receiving": fmt_int(vals[0]),
+                        "Hearing": fmt_int(vals[1]),
+                        "Reject": fmt_int(vals[2]),
+                        "Accept": fmt_int(vals[3]),
+                        "Inclusion": fmt_int(vals[4]),
+                    }
+
+                fp_kpi_groups = [("Total (All Forms)", _fp_kpi_group(filtered))]
+                for _grp_label, _grp_code in [("Form 6", "FORM6"), ("Form 7", "FORM7"), ("Form 8", "FORM8")]:
+                    fp_kpi_groups.append(
+                        (_grp_label, _fp_kpi_group(filtered[filtered["Form_Type"] == _grp_code])))
+
                 try:
                     pdf_bytes = build_pdf_report(
                         title="Form Processing Report",
                         subtitle=f"Report period: {fp_meta.get('report_period') or 'N/A'}",
-                        filters_desc=fp_filters_desc, kpis=kpis_for_pdf,
+                        filters_desc=fp_filters_desc, kpis=None, kpi_groups=fp_kpi_groups,
                         district_df=fp_dist_formtype_rep, ac_df=fp_ac_formtype_rep,
                         charts=[],
                         district_cols=FP_FORMTYPE_DIST_COLS, ac_cols=FP_FORMTYPE_AC_COLS,
