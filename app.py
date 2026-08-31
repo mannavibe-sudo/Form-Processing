@@ -164,7 +164,7 @@ NOTICE_COL_FORMATS = {
 }
 # PDF-only: % Parked for Final figures under 80% are flagged in red text in
 # the District-wise/AC-wise tables (on-screen tables are unaffected).
-NOTICE_RED_BELOW = {"Parked_Final_%": 80}
+NOTICE_RED_BELOW = {"Parked_Final_%": 90}
 # Form Processing's screen columns are defined further below, right after
 # FP_STATUS_COLS -- they're built from that list (every raw status column
 # from the sheet), so they can't be defined before it exists.
