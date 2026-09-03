@@ -101,6 +101,9 @@ ELECTORS_FILE = os.path.join(_APP_DIR, "Electors.xlsx")
 # covering an earlier report period, so the two can be diffed district by
 # district to show what changed between the two cutoff dates.
 FORM_PROCESSING_OLD_FILE = os.path.join(_APP_DIR, "1513.xlsx")
+# Part-level Notice/Hearing counts (one row per polling Part within an AC) --
+# used only by the Part-wise Report tab's "bottom N parts per AC" drill-down.
+PARTWISE_FILE = os.path.join(_APP_DIR, "Partwise.xlsx")
 
 BRAND_PRIMARY = "#0B3D91"
 BRAND_PRIMARY_DARK = "#082B66"
@@ -165,6 +168,48 @@ NOTICE_COL_FORMATS = {
 # PDF-only: % Parked for Final figures under 80% are flagged in red text in
 # the District-wise/AC-wise tables (on-screen tables are unaffected).
 NOTICE_RED_BELOW = {"Parked_Final_%": 90}
+
+# Part-wise Report: same column-naming convention/wording as the Notice &
+# Hearing report above, but at Part granularity (one row per polling Part
+# within an AC), for the "bottom N parts per AC" drill-down. Partwise.xlsx
+# has no elector count per Part (only Electors.xlsx has electors, and only
+# at AC level), so "Electors" and "% Parked for Final" -- which is defined
+# as a share of Electors -- are not meaningful at this granularity and are
+# left out here; everything else mirrors NOTICE_AC_COLS.
+PARTWISE_COLS = ["Rank", "District", "AC_No", "AC_Name", "Part_No", "Notice_Delivered",
+                 "Hearing_Held", "Hearing_Held_%", "Hearing_Date_Lapsed", "Lapsed_%",
+                 "DEO_Total_Pending", "Ineligible_Final", "Parked_Notices_Generated",
+                 "Parked_Others"]
+PARTWISE_COL_LABELS = {
+    "Rank": "Rank (1 = worst)",
+    "Part_No": "Part No.",
+    "Notice_Delivered": "Notice Delivered",
+    "Hearing_Held": "Hearing Held",
+    "Hearing_Held_%": "% Hearing Held",
+    "Hearing_Date_Lapsed": "Hearing Date Lapsed",
+    "Lapsed_%": "% Lapsed",
+    "DEO_Total_Pending": "Total pending Text (DEO)",
+    "Ineligible_Final": "Found Ineligible for Final (ERO)",
+    "Parked_Notices_Generated": "Parked for Final Publication w.r.t. Notices Generated",
+    "Parked_Others": "Parked For Final Publication w.r.t. Others",
+}
+PARTWISE_COL_FORMATS = {
+    "Rank": "{:,.0f}", "Part_No": "{:,.0f}",
+    "Notice_Delivered": "{:,.0f}", "Hearing_Held": "{:,.0f}", "Hearing_Held_%": "{:.2f}",
+    "Hearing_Date_Lapsed": "{:,.0f}", "Lapsed_%": "{:.2f}",
+    "DEO_Total_Pending": "{:,.0f}", "Ineligible_Final": "{:,.0f}",
+    "Parked_Notices_Generated": "{:,.0f}", "Parked_Others": "{:,.0f}",
+}
+# "Bottom N parts per AC" ranking options -- label -> (column, ascending).
+# ascending=True means the *lowest* values are "worst" (e.g. % Hearing Held);
+# ascending=False means the *highest* values are "worst" (e.g. % Lapsed).
+PARTWISE_RANK_OPTIONS = {
+    "Found Ineligible for Final -- ERO (highest first)": ("Ineligible_Final", False),
+    "% Hearing Held (lowest first)": ("Hearing_Held_%", True),
+    "% Lapsed (highest first)": ("Lapsed_%", False),
+    "Total pending Text -- DEO (highest first)": ("DEO_Total_Pending", False),
+    "Notice Pending Delivery (highest first)": ("Notice_Pending_Delivery", False),
+}
 # Form Processing's screen columns are defined further below, right after
 # FP_STATUS_COLS -- they're built from that list (every raw status column
 # from the sheet), so they can't be defined before it exists.
@@ -838,6 +883,94 @@ def notice_total_row(dist_rep: pd.DataFrame) -> pd.DataFrame:
     return row
 
 
+# Partwise.xlsx source-column -> internal-column mapping. Unlike Notice.xlsx
+# / Electors.xlsx / Form_Processing.xlsx, this file has one plain header row
+# (no title/scope rows, no merged header) so it can be read with pandas'
+# normal header=0 and just renamed -- no positional-column workaround needed.
+PARTWISE_RAW_RENAME = {
+    "District Number": "District_No", "District Name": "District",
+    "AC Number": "AC_No", "Asmbly Name": "AC_Name", "Part No": "Part_No",
+    "Notice Generated": "Notice_Generated",
+    "Pending for Notice Generation": "Pending_Notice_Generation",
+    "Notice Delivered": "Notice_Delivered",
+    "Notice Pending Delivery": "Notice_Pending_Delivery",
+    "Hearings Held": "Hearing_Held",
+    "Hearing Date Lapsed": "Hearing_Date_Lapsed",
+    "Reschedule Date Lapsed": "Reschedule_Date_Lapsed",
+    "DEO-Status Total Pending": "DEO_Total_Pending",
+    "DEO-Status Pending GT 5 Days": "DEO_Pending_GT5",
+    "DEO-Status Verified": "DEO_Verified",
+    "DEO-Status Not Verified": "DEO_Not_Verified",
+    "ERO/AERO Status Found Ineligible For Final w.r.t. Notice Generated": "Ineligible_Final",
+    "ERO/AERO Status Parked For Final Publication": "Parked_Notices_Generated",
+    "ERO/AERO Parked For Final Publication w.r.t. Others": "Parked_Others",
+}
+
+
+@st.cache_data(show_spinner=False)
+def load_partwise_data(path: str):
+    """Load Partwise.xlsx -- one row per polling Part within an AC, used only
+    by the Part-wise Report tab's "bottom N parts per AC" drill-down.
+
+    This workbook carries its own District No./District Name/AC No./AC Name
+    per row (no separate Electors.xlsx merge needed here), but has no
+    elector count per Part, so % Parked for Final (a share of Electors)
+    cannot be computed at this granularity -- see PARTWISE_COLS.
+    """
+    try:
+        raw = pd.read_excel(path, sheet_name=0)
+    except FileNotFoundError:
+        return None, None, f"File not found: {path}"
+    except Exception as exc:  # noqa: BLE001
+        return None, None, f"Could not read {path}: {exc}"
+
+    missing = [c for c in PARTWISE_RAW_RENAME if c not in raw.columns]
+    if missing:
+        return None, None, ("Partwise.xlsx does not match the expected layout "
+                             f"(missing column(s): {', '.join(missing)}).")
+
+    df = raw.rename(columns=PARTWISE_RAW_RENAME).copy()
+    df["District"] = df["District"].apply(clean_str)
+    df["AC_Name"] = df["AC_Name"].apply(clean_str)
+    id_cols = {"District", "AC_Name"}
+    num_cols = ["District_No", "AC_No", "Part_No"] + [
+        c for c in PARTWISE_RAW_RENAME.values() if c not in id_cols
+        and c not in ("District_No", "AC_No", "Part_No")
+    ]
+    for c in num_cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+    df["District_No"] = df["District_No"].astype(int)
+    df["AC_No"] = df["AC_No"].astype(int)
+    df["Part_No"] = df["Part_No"].astype(int)
+    df = df[df["Notice_Delivered"] > 0].copy()  # avoid divide-by-zero in the % columns below
+    if df.empty:
+        return None, None, "Partwise.xlsx has no usable Part-level rows (Notice Delivered is 0 everywhere)."
+
+    df["Hearing_Held_%"] = df.apply(
+        lambda r: safe_div(r["Hearing_Held"], r["Notice_Delivered"]), axis=1)
+    df["Lapsed_%"] = df.apply(
+        lambda r: safe_div(r["Hearing_Date_Lapsed"], r["Notice_Delivered"]), axis=1)
+
+    meta = {"n_parts": len(df), "n_acs": df["AC_No"].nunique(), "n_districts": df["District"].nunique()}
+    return df, meta, None
+
+
+def partwise_bottom_n_report(df: pd.DataFrame, rank_col: str = "Hearing_Held_%",
+                              ascending: bool = True, n: int = 10) -> pd.DataFrame:
+    """The N worst-performing Parts within each AC, ranked by `rank_col`
+    (ascending=True -- lowest values are worst, e.g. % Hearing Held;
+    ascending=False -- highest values are worst, e.g. % Lapsed). Adds a
+    "Rank" column (1 = worst) scoped to each AC, and orders the output by
+    District No. then AC No. then Rank so it reads like the other AC-wise
+    reports (grouped, in official District order)."""
+    if df.empty:
+        return df
+    g = df.sort_values(["AC_No", rank_col], ascending=[True, ascending])
+    out = g.groupby("AC_No", group_keys=False).head(n).copy()
+    out["Rank"] = out.groupby("AC_No").cumcount() + 1
+    return out.sort_values(["District_No", "AC_No", "Rank"])
+
+
 # --------------------------------------------------------------------------
 # UI helpers
 # --------------------------------------------------------------------------
@@ -1284,7 +1417,8 @@ def _fig_to_png(fig, width=1000, height=480):
 def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
                       charts, district_cols=None, ac_cols=None, col_labels=None,
                       district_total_row=None, ac_total_row=None, red_below=None,
-                      kpi_groups=None):
+                      kpi_groups=None, district_title="District-wise Report",
+                      ac_title="AC-wise Report"):
     """Builds a professional MIS PDF report and returns bytes.
 
     col_labels: optional {column: header text} override (see render_html_table).
@@ -1441,7 +1575,7 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
                 story.append(Spacer(1, 2))
         section_added = True
 
-    NARROW_COLS = {"AC_No", "Parts", "District_No"}
+    NARROW_COLS = {"AC_No", "Parts", "District_No", "Part_No", "Rank"}
     MEDIUM_COLS = {"ACs_Reporting"}  # short numbers, but a longer header ("ACs Reporting")
     WIDE_COLS = {"District", "AC_Name", "Form_Type"}
     cell_style = ParagraphStyle("MISCell", fontName="Helvetica", fontSize=9.5, leading=12)
@@ -1555,14 +1689,14 @@ def build_pdf_report(title, subtitle, filters_desc, kpis, district_df, ac_df,
 
     if district_df is not None and not district_df.empty and district_cols:
         _section_gap()
-        story.append(Paragraph("<b>District-wise Report</b>", h2_style))
+        story.append(Paragraph(f"<b>{district_title}</b>", h2_style))
         story.append(df_to_table(district_df, district_cols, total_row=district_total_row,
                                   red_below=red_below))
         section_added = True
 
     if ac_df is not None and not ac_df.empty and ac_cols:
         _section_gap()
-        story.append(Paragraph("<b>AC-wise Report</b>", h2_style))
+        story.append(Paragraph(f"<b>{ac_title}</b>", h2_style))
         story.append(df_to_table(ac_df, ac_cols, total_row=ac_total_row, red_below=red_below))
         section_added = True
 
@@ -1607,13 +1741,14 @@ ac_map = build_ac_district_map(nh_df) if nh_df is not None else {}
 ac_districtno_map = build_ac_districtno_map(nh_df) if nh_df is not None else {}
 fp_df, fp_meta, fp_err = load_form_processing(FORM_PROCESSING_FILE, ac_map, ac_districtno_map)
 fp_old_df, fp_old_meta, fp_old_err = load_form_processing(FORM_PROCESSING_OLD_FILE, ac_map, ac_districtno_map)
+pw_df, pw_meta, pw_err = load_partwise_data(PARTWISE_FILE)
 
 with st.sidebar:
     st.markdown("### \U0001F4CB Dashboard Controls")
     st.caption("Filters apply live to KPIs, charts, reports and exports.")
 
 VIEW_LABELS = {"fp": "\U0001F4C4  Form Processing", "nh": "\U0001F4E8  Notice & Hearing",
-               "diff": "\U0001F4CA  Difference Report"}
+               "pw": "\U0001F4CD  Part-wise Report", "diff": "\U0001F4CA  Difference Report"}
 active_view = st.radio(
     "View", list(VIEW_LABELS.keys()), format_func=lambda k: VIEW_LABELS[k],
     horizontal=True, key="active_view", label_visibility="collapsed",
@@ -2153,6 +2288,108 @@ elif active_view == "nh":
                     st.download_button("\U0001F4C4 AC-wise (PDF)", nh_ac_pdf_bytes,
                                         file_name="Notice_Hearing_AC_Report.pdf",
                                         mime="application/pdf", use_container_width=True, key="nh_dl_ac_pdf")
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"PDF generation failed: {exc}")
+
+# ==========================================================================
+# VIEW: PART-WISE REPORT
+# ==========================================================================
+elif active_view == "pw":
+    if pw_err:
+        st.error(f"**Part-wise data could not be loaded.**\n\n{pw_err}")
+    elif pw_df is None or pw_df.empty:
+        st.warning("Partwise.xlsx loaded but contains no usable data rows.")
+    else:
+        st.markdown(f"""<div class="note-box">
+            <b>Granularity:</b> one row per polling Part
+            ({fmt_int(len(pw_df))} Parts across {pw_df['AC_No'].nunique()} ACs,
+            {pw_df['District'].nunique()} districts).
+            <br><span style="color:{BRAND_MUTED}">Built from Partwise.xlsx. Same column set/wording as the
+            Notice &amp; Hearing report, except <b>Electors</b> and <b>% Parked for Final</b> -- Partwise.xlsx
+            has no elector count per Part (only Electors.xlsx does, at AC level), and % Parked for Final is
+            defined as a share of Electors, so it isn't meaningful at this granularity.</span>
+            </div>""", unsafe_allow_html=True)
+
+        with st.sidebar:
+            st.markdown("#### \U0001F4CD Part-wise Filters")
+            pw_districts = sorted(pw_df["District"].unique())
+            pw_sel_districts = st.multiselect("District", pw_districts, default=[], key="pw_dist")
+            pw_scope = pw_df[pw_df["District"].isin(pw_sel_districts)] if pw_sel_districts else pw_df
+            pw_acs = sorted(pw_scope["AC_Name"].unique())
+            pw_sel_acs = st.multiselect("Assembly Constituency (AC)", pw_acs, default=[], key="pw_ac")
+            pw_rank_label = st.selectbox("Rank parts by", list(PARTWISE_RANK_OPTIONS.keys()),
+                                          index=0, key="pw_rank")
+            pw_n = st.selectbox("Parts per AC to show", [5, 10, 15, 20], index=1, key="pw_n")
+
+        pw_filtered = pw_df.copy()
+        if pw_sel_districts:
+            pw_filtered = pw_filtered[pw_filtered["District"].isin(pw_sel_districts)]
+        if pw_sel_acs:
+            pw_filtered = pw_filtered[pw_filtered["AC_Name"].isin(pw_sel_acs)]
+
+        pw_rank_col, pw_ascending = PARTWISE_RANK_OPTIONS[pw_rank_label]
+        # "Bottom" when the lowest values are worst (e.g. % Hearing Held),
+        # "Top" when the highest values are worst (e.g. Found Ineligible for
+        # Final -- ERO) -- so the section wording always reads naturally
+        # regardless of which metric is selected.
+        pw_direction_word = "Bottom" if pw_ascending else "Top"
+
+        pw_filt_parts = []
+        if pw_sel_districts: pw_filt_parts.append("District: " + ", ".join(pw_sel_districts))
+        if pw_sel_acs: pw_filt_parts.append("AC: " + ", ".join(pw_sel_acs))
+        pw_filt_parts.append(f"{pw_direction_word} {pw_n} per AC by {pw_rank_label}")
+        pw_filters_desc = " | ".join(pw_filt_parts)
+
+        if pw_filtered.empty:
+            no_data_message()
+        else:
+            pw_bottom_rep = partwise_bottom_n_report(pw_filtered, pw_rank_col, pw_ascending, pw_n)
+
+            section_title("Key Performance Indicators")
+            c1, c2, c3, c4 = st.columns(4, gap="medium")
+            kpi_card(c1, "Parts in Scope", fmt_int(len(pw_filtered)),
+                     f"{pw_filtered['AC_No'].nunique()} ACs · {pw_filtered['District'].nunique()} districts")
+            kpi_card(c2, "Avg % Hearing Held", fmt_pct(pw_filtered["Hearing_Held_%"].mean()),
+                     "across all parts in scope", color=BRAND_ACCENT)
+            kpi_card(c3, "Total Found Ineligible for Final (ERO)", fmt_int(pw_filtered["Ineligible_Final"].sum()),
+                     "across all parts in scope", color=BRAND_DANGER)
+            kpi_card(c4, "Parts Shown Below", fmt_int(len(pw_bottom_rep)),
+                     f"{pw_direction_word.lower()} {pw_n} per AC, {pw_bottom_rep['AC_No'].nunique()} ACs", color=BRAND_WARN)
+
+            section_title(f"{pw_direction_word} {pw_n} Parts per AC (by {pw_rank_label})")
+            rank_note = "Rank 1 = highest value in that AC." if not pw_ascending else "Rank 1 = worst part in that AC."
+            render_html_table(
+                pw_bottom_rep, PARTWISE_COLS,
+                formats=PARTWISE_COL_FORMATS, labels=PARTWISE_COL_LABELS,
+                caption="Columns match the Notice & Hearing report format (Electors / % Parked for Final "
+                        f"excluded -- not available at Part level). {rank_note}",
+            )
+
+            # ------------------ Downloads ------------------
+            section_title("Downloads")
+            dcol1, dcol2 = st.columns(2)
+            with dcol1:
+                pw_excel_bytes = build_excel_download({
+                    f"{pw_direction_word} N Parts per AC": pw_bottom_rep,
+                    "All Parts (Filtered)": pw_filtered,
+                })
+                st.download_button("\U0001F4E5 Download Report (Excel)", pw_excel_bytes,
+                                    file_name="Partwise_Report.xlsx",
+                                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                    use_container_width=True, key="pw_dl_xlsx")
+            with dcol2:
+                try:
+                    pw_pdf_bytes = build_pdf_report(
+                        title="Part-wise Notice & Hearing Report",
+                        subtitle=f"{pw_direction_word} {pw_n} parts per AC, ranked by {pw_rank_label}",
+                        filters_desc=pw_filters_desc, kpis=None,
+                        district_df=pw_bottom_rep, ac_df=None, charts=[],
+                        district_cols=PARTWISE_COLS, col_labels=PARTWISE_COL_LABELS,
+                        district_title=f"{pw_direction_word} {pw_n} Parts per AC",
+                    )
+                    st.download_button("\U0001F4C4 Download PDF Report", pw_pdf_bytes,
+                                        file_name="Partwise_Report.pdf",
+                                        mime="application/pdf", use_container_width=True, key="pw_dl_pdf")
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"PDF generation failed: {exc}")
 
