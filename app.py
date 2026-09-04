@@ -2300,10 +2300,17 @@ elif active_view == "pw":
     elif pw_df is None or pw_df.empty:
         st.warning("Partwise.xlsx loaded but contains no usable data rows.")
     else:
+        # Partwise.xlsx itself carries no title/timestamp row -- reuse the
+        # "Last Updated On" timestamp already parsed from Notice.xlsx (same
+        # underlying SIR data refresh) so this tab shows it too, on-screen
+        # and in both downloads, per the user's request.
+        pw_last_updated = nh_meta.get("last_updated") if nh_meta else None
+        pw_last_updated_line = (f"<br><b>Last Updated On (from Notice.xlsx):</b> {pw_last_updated}"
+                                 if pw_last_updated else "")
         st.markdown(f"""<div class="note-box">
             <b>Granularity:</b> one row per polling Part
             ({fmt_int(len(pw_df))} Parts across {pw_df['AC_No'].nunique()} ACs,
-            {pw_df['District'].nunique()} districts).
+            {pw_df['District'].nunique()} districts).{pw_last_updated_line}
             <br><span style="color:{BRAND_MUTED}">Built from Partwise.xlsx. Same column set/wording as the
             Notice &amp; Hearing report, except <b>Electors</b> and <b>% Parked for Final</b> -- Partwise.xlsx
             has no elector count per Part (only Electors.xlsx does, at AC level), and % Parked for Final is
@@ -2369,19 +2376,24 @@ elif active_view == "pw":
             section_title("Downloads")
             dcol1, dcol2 = st.columns(2)
             with dcol1:
-                pw_excel_bytes = build_excel_download({
-                    f"{pw_direction_word} N Parts per AC": pw_bottom_rep,
-                    "All Parts (Filtered)": pw_filtered,
-                })
+                pw_excel_sheets = {}
+                if pw_last_updated:
+                    pw_excel_sheets["Report Info"] = pd.DataFrame(
+                        {"Note": [f"Last Updated On (from Notice.xlsx): {pw_last_updated}"]})
+                pw_excel_sheets[f"{pw_direction_word} N Parts per AC"] = pw_bottom_rep
+                pw_excel_sheets["All Parts (Filtered)"] = pw_filtered
+                pw_excel_bytes = build_excel_download(pw_excel_sheets)
                 st.download_button("\U0001F4E5 Download Report (Excel)", pw_excel_bytes,
                                     file_name="Partwise_Report.xlsx",
                                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                                     use_container_width=True, key="pw_dl_xlsx")
             with dcol2:
+                pw_subtitle_suffix = f"  |  Last Updated On: {pw_last_updated}" if pw_last_updated else ""
                 try:
                     pw_pdf_bytes = build_pdf_report(
                         title="Part-wise Notice & Hearing Report",
-                        subtitle=f"{pw_direction_word} {pw_n} parts per AC, ranked by {pw_rank_label}",
+                        subtitle=f"{pw_direction_word} {pw_n} parts per AC, ranked by "
+                                 f"{pw_rank_label}{pw_subtitle_suffix}",
                         filters_desc=pw_filters_desc, kpis=None,
                         district_df=pw_bottom_rep, ac_df=None, charts=[],
                         district_cols=PARTWISE_COLS, col_labels=PARTWISE_COL_LABELS,
