@@ -2746,37 +2746,42 @@ elif active_view == "combined":
         PCT_COLS_CB = ["Hearing_Held_%", "Ineligible_Rate_%", "Net_Deletions_%"]
 
         def _show_table(df, key_cols):
-            show = df[[c for c in COL_LABELS_CB if c in df.columns]].copy()
-            show = show.rename(columns=COL_LABELS_CB)
-            show = show.sort_values("F7 Received", ascending=False).reset_index(drop=True)
-            # Total row
+            # Keep only cols that exist, in display order
+            avail_cols = [c for c in COL_LABELS_CB if c in df.columns]
+            show = df[avail_cols].copy().sort_values("F7_Received", ascending=False).reset_index(drop=True)
+
+            # Build grand total row
             tot = {}
-            for c in show.columns:
-                tot[c] = show[c].sum() if show[c].dtype.kind in "iuf" else ""
-            tot[list(show.columns)[0]] = "TOTAL"
-            if "AC No." in tot: tot["AC No."] = ""
-            if "AC Name" in tot: tot["AC Name"] = "ALL"
-            # recompute derived % for total row
-            f7a = show["F7 Accepted"].sum() if "F7 Accepted" in show else 0
-            nd  = show["Net Deletions"].sum() if "Net Deletions" in show else 0
-            inelig = show["Found Ineligible (ERO)"].sum() if "Found Ineligible (ERO)" in show else 0
-            hh  = show["Hearing Held"].sum() if "Hearing Held" in show else 0
-            nd_del = show["Notice Delivered"].sum() if "Notice Delivered" in show else 0
-            if "% Hearing Held" in show:           tot["% Hearing Held"] = safe_div(hh, nd_del)
-            if "% Ineligible / F7 Accepted" in show: tot["% Ineligible / F7 Accepted"] = safe_div(inelig, f7a)
-            if "% Net Deletions / F7 Accepted" in show: tot["% Net Deletions / F7 Accepted"] = safe_div(nd, f7a)
+            for c in avail_cols:
+                tot[c] = int(show[c].sum()) if show[c].dtype.kind in "iuf" else ""
+            tot[avail_cols[0]] = "TOTAL"
+            if "AC_No"   in tot: tot["AC_No"]   = ""
+            if "AC_Name" in tot: tot["AC_Name"]  = "ALL"
+            # Recompute % for total row correctly
+            f7a    = int(show["F7_Accepted"].sum())       if "F7_Accepted"       in show else 0
+            nd     = int(show["Net_Deletions"].sum())     if "Net_Deletions"     in show else 0
+            inelig = int(show["Ineligible_Final"].sum())  if "Ineligible_Final"  in show else 0
+            hh     = int(show["Hearing_Held"].sum())      if "Hearing_Held"      in show else 0
+            nd_del = int(show["Notice_Delivered"].sum())  if "Notice_Delivered"  in show else 0
+            if "Hearing_Held_%"    in avail_cols: tot["Hearing_Held_%"]    = safe_div(hh, nd_del)
+            if "Ineligible_Rate_%" in avail_cols: tot["Ineligible_Rate_%"] = safe_div(inelig, f7a)
+            if "Net_Deletions_%"   in avail_cols: tot["Net_Deletions_%"]   = safe_div(nd, f7a)
+
             show = pd.concat([show, pd.DataFrame([tot])], ignore_index=True)
-            # Format
+
+            # Format map for render_html_table
             fmt = {}
-            for c in show.columns:
-                if show[c].dtype.kind in "iuf":
-                    fmt[c] = "{:.2f}%" if "%" in c else "{:,.0f}"
-            def _hl(row):
-                first = list(row.index)[0]
-                if str(row[first]) in ("TOTAL","ALL") or row.get("AC Name","") == "ALL":
-                    return ["font-weight:bold;background:#E8F4FD"]*len(row)
-                return [""]*len(row)
-            render_html_table(show.style.apply(_hl, axis=1).format(fmt, na_rep="-"), show)
+            for c in avail_cols:
+                if c in PCT_COLS_CB:
+                    fmt[c] = "{:.2f}%"
+                elif show[c].dtype.kind in "iuf":
+                    fmt[c] = "{:,.0f}"
+
+            # Total row dict for render_html_table
+            total_row_dict = tot
+
+            render_html_table(show, avail_cols, formats=fmt,
+                              labels=COL_LABELS_CB, total_row=total_row_dict)
             return show
 
         # ── Page header ───────────────────────────────────────────────────
@@ -2862,9 +2867,14 @@ Higher Net Deletions means more genuine deletions are moving forward.
         section_title("Downloads")
         dl1, dl2, dl3, dl4 = st.columns(4)
 
-        if not dist_rep.empty:
+        if not dist_rep.empty and 'dist_show' in dir():
+            _dist_cols = [c for c in COL_LABELS_CB if c in dist_show.columns]
+            _dist_pct  = [c for c in _dist_cols if c in PCT_COLS_CB]
+            _dist_num  = [c for c in _dist_cols if c not in PCT_COLS_CB and dist_show[c].dtype.kind in "iuf"]
             with dl1:
-                d_xl = build_excel_download({"District-wise": dist_show}, col_labels={}, number_cols=[])
+                d_xl = build_excel_download(
+                    {"District-wise": dist_show[_dist_cols]},
+                    col_labels=COL_LABELS_CB, number_cols=_dist_num)
                 st.download_button("📥 District Excel", d_xl,
                     file_name="Form7_Notice_District.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2872,19 +2882,23 @@ Higher Net Deletions means more genuine deletions are moving forward.
             with dl3:
                 d_pdf = build_pdf_report(
                     title="Form 7 + Notice Combined — District Wise",
-                    district_df=dist_show, ac_df=None,
-                    district_cols=list(dist_show.columns), ac_cols=[],
-                    col_labels={}, pct_cols=[c for c in dist_show.columns if "%" in c],
-                    number_cols=[c for c in dist_show.columns if dist_show[c].dtype.kind in "iuf" and "%" not in c],
-                    meta={})
+                    district_df=dist_show[_dist_cols], ac_df=None,
+                    district_cols=_dist_cols, ac_cols=[],
+                    col_labels=COL_LABELS_CB, pct_cols=_dist_pct,
+                    number_cols=_dist_num, meta={})
                 st.download_button("📄 District PDF", d_pdf,
                     file_name="Form7_Notice_District.pdf",
                     mime="application/pdf",
                     use_container_width=True, key="cb_dl_dist_pdf")
 
-        if not ac_rep.empty:
+        if not ac_rep.empty and 'ac_show' in dir():
+            _ac_cols = [c for c in COL_LABELS_CB if c in ac_show.columns]
+            _ac_pct  = [c for c in _ac_cols if c in PCT_COLS_CB]
+            _ac_num  = [c for c in _ac_cols if c not in PCT_COLS_CB and ac_show[c].dtype.kind in "iuf"]
             with dl2:
-                a_xl = build_excel_download({"AC-wise": ac_show}, col_labels={}, number_cols=[])
+                a_xl = build_excel_download(
+                    {"AC-wise": ac_show[_ac_cols]},
+                    col_labels=COL_LABELS_CB, number_cols=_ac_num)
                 st.download_button("📥 AC-wise Excel", a_xl,
                     file_name="Form7_Notice_AC.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -2892,11 +2906,10 @@ Higher Net Deletions means more genuine deletions are moving forward.
             with dl4:
                 a_pdf = build_pdf_report(
                     title="Form 7 + Notice Combined — AC Wise",
-                    district_df=None, ac_df=ac_show,
-                    district_cols=[], ac_cols=list(ac_show.columns),
-                    col_labels={}, pct_cols=[c for c in ac_show.columns if "%" in c],
-                    number_cols=[c for c in ac_show.columns if ac_show[c].dtype.kind in "iuf" and "%" not in c],
-                    meta={})
+                    district_df=None, ac_df=ac_show[_ac_cols],
+                    district_cols=[], ac_cols=_ac_cols,
+                    col_labels=COL_LABELS_CB, pct_cols=_ac_pct,
+                    number_cols=_ac_num, meta={})
                 st.download_button("📄 AC-wise PDF", a_pdf,
                     file_name="Form7_Notice_AC.pdf",
                     mime="application/pdf",
