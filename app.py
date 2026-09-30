@@ -1748,7 +1748,8 @@ with st.sidebar:
     st.caption("Filters apply live to KPIs, charts, reports and exports.")
 
 VIEW_LABELS = {"fp": "\U0001F4C4  Form Processing", "nh": "\U0001F4E8  Notice & Hearing",
-               "pw": "\U0001F4CD  Part-wise Report", "diff": "\U0001F4CA  Difference Report"}
+               "pw": "\U0001F4CD  Part-wise Report", "diff": "\U0001F4CA  Difference Report",
+    "combined": "\U0001F4CB  Form 7 + Notice Combined"}
 active_view = st.radio(
     "View", list(VIEW_LABELS.keys()), format_func=lambda k: VIEW_LABELS[k],
     horizontal=True, key="active_view", label_visibility="collapsed",
@@ -2408,7 +2409,7 @@ elif active_view == "pw":
 # ==========================================================================
 # VIEW: DIFFERENCE REPORT
 # ==========================================================================
-else:
+elif active_view == "diff":
     if fp_err:
         st.error(f"**Form Processing data could not be loaded.**\n\n{fp_err}")
     elif fp_old_err:
@@ -2609,6 +2610,297 @@ else:
                                         mime="application/pdf", use_container_width=True, key="diff_dl_ac_pdf")
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"PDF generation failed: {exc}")
+
+
+# ==========================================================================
+# VIEW: FORM 7 + NOTICE COMBINED REPORT
+# ==========================================================================
+elif active_view == "combined":
+
+    fp_ok = fp_df is not None and not fp_df.empty
+    nh_ok = nh_df is not None and not nh_df.empty
+
+    if not fp_ok and not nh_ok:
+        st.error("Neither Form Processing nor Notice & Hearing data could be loaded.")
+    else:
+        # ── Sidebar filters ───────────────────────────────────────────────
+        with st.sidebar:
+            st.markdown("#### 📋 Form 7 + Notice Filters")
+            _cb_dist_pool = sorted(
+                (fp_df["District"].unique() if fp_ok else []) |
+                set(nh_df["District"].unique() if nh_ok else [])
+            )
+            cb_sel_dist = st.multiselect("District", _cb_dist_pool, default=[], key="cb_dist")
+            _cb_ac_pool = set()
+            if fp_ok:
+                _src = fp_df[fp_df["District"].isin(cb_sel_dist)] if cb_sel_dist else fp_df
+                _cb_ac_pool |= set(_src["AC_Name"].unique())
+            if nh_ok:
+                _src2 = nh_df[nh_df["District"].isin(cb_sel_dist)] if cb_sel_dist else nh_df
+                _cb_ac_pool |= set(_src2["AC_Name"].unique())
+            cb_sel_acs = st.multiselect("Assembly Constituency", sorted(_cb_ac_pool),
+                                         default=[], key="cb_ac")
+
+        # ── Apply filters ─────────────────────────────────────────────────
+        f7 = None
+        if fp_ok:
+            f7 = fp_df[fp_df["Form_Type"] == "FORM7"].copy()
+            if cb_sel_dist: f7 = f7[f7["District"].isin(cb_sel_dist)]
+            if cb_sel_acs:  f7 = f7[f7["AC_Name"].isin(cb_sel_acs)]
+
+        nh = None
+        if nh_ok:
+            nh = nh_df.copy()
+            if cb_sel_dist: nh = nh[nh["District"].isin(cb_sel_dist)]
+            if cb_sel_acs:  nh = nh[nh["AC_Name"].isin(cb_sel_acs)]
+
+        # ── Aggregation helpers ───────────────────────────────────────────
+        def _f7_dist(df):
+            if df is None or df.empty: return pd.DataFrame()
+            return df.groupby("District", as_index=False).agg(
+                F7_Received=("Total_Received",    "sum"),
+                F7_Rejected=("Rejected",           "sum"),
+                F7_Accepted=("Accepted",            "sum"),
+                F7_Hearing_Scheduled=("Hearing_Scheduled", "sum"),
+            )
+
+        def _nh_dist(df):
+            if df is None or df.empty: return pd.DataFrame()
+            agg_args = dict(
+                Electors=("Electors",            "sum"),
+                Notice_Delivered=("Notice_Delivered", "sum"),
+                Hearing_Held=("Hearing_Held",     "sum"),
+                Ineligible_Final=("Ineligible_Final", "sum"),
+            )
+            if "Hearing_Scheduled" in df.columns:
+                agg_args["NH_Hearing_Scheduled"] = ("Hearing_Scheduled", "sum")
+            g = df.groupby("District", as_index=False).agg(**agg_args)
+            if "NH_Hearing_Scheduled" not in g.columns:
+                g["NH_Hearing_Scheduled"] = 0
+            return g
+
+        def _f7_ac(df):
+            if df is None or df.empty: return pd.DataFrame()
+            return df.groupby(["District","AC_No","AC_Name"], as_index=False).agg(
+                F7_Received=("Total_Received",    "sum"),
+                F7_Rejected=("Rejected",           "sum"),
+                F7_Accepted=("Accepted",            "sum"),
+                F7_Hearing_Scheduled=("Hearing_Scheduled", "sum"),
+            )
+
+        def _nh_ac(df):
+            if df is None or df.empty: return pd.DataFrame()
+            agg_args = dict(
+                Electors=("Electors",            "sum"),
+                Notice_Delivered=("Notice_Delivered", "sum"),
+                Hearing_Held=("Hearing_Held",     "sum"),
+                Ineligible_Final=("Ineligible_Final", "sum"),
+            )
+            if "Hearing_Scheduled" in df.columns:
+                agg_args["NH_Hearing_Scheduled"] = ("Hearing_Scheduled", "sum")
+            g = df.groupby(["District","AC_No","AC_Name"], as_index=False).agg(**agg_args)
+            if "NH_Hearing_Scheduled" not in g.columns:
+                g["NH_Hearing_Scheduled"] = 0
+            return g
+
+        def _merge_and_derive(left, right, on):
+            if left.empty and right.empty: return pd.DataFrame()
+            if left.empty:  merged = right.copy()
+            elif right.empty: merged = left.copy()
+            else: merged = pd.merge(left, right, on=on, how="outer").fillna(0)
+            # Net Deletions = F7 Accepted − Found Ineligible for Final (ERO)
+            if "F7_Accepted" in merged and "Ineligible_Final" in merged:
+                merged["Net_Deletions"] = (merged["F7_Accepted"] - merged["Ineligible_Final"]).clip(lower=0)
+                merged["Net_Deletions_%"] = merged.apply(
+                    lambda r: safe_div(r["Net_Deletions"], r["F7_Accepted"]), axis=1)
+                merged["Ineligible_Rate_%"] = merged.apply(
+                    lambda r: safe_div(r["Ineligible_Final"], r["F7_Accepted"]), axis=1)
+            if "Hearing_Held" in merged and "Notice_Delivered" in merged:
+                merged["Hearing_Held_%"] = merged.apply(
+                    lambda r: safe_div(r["Hearing_Held"], r["Notice_Delivered"]), axis=1)
+            return merged
+
+        dist_rep = _merge_and_derive(_f7_dist(f7), _nh_dist(nh), on="District")
+        ac_rep   = _merge_and_derive(_f7_ac(f7),   _nh_ac(nh),   on=["District","AC_No","AC_Name"])
+
+        # ── Column display config ─────────────────────────────────────────
+        COL_LABELS_CB = {
+            "District":              "District",
+            "AC_No":                 "AC No.",
+            "AC_Name":               "AC Name",
+            "Electors":              "Total Electors",
+            "F7_Received":           "F7 Received",
+            "F7_Rejected":           "F7 Rejected",
+            "F7_Accepted":           "F7 Accepted",
+            "F7_Hearing_Scheduled":  "F7 Hearing Sched.",
+            "Notice_Delivered":      "Notice Delivered",
+            "NH_Hearing_Scheduled":  "Notice Hearing Sched.",
+            "Hearing_Held":          "Hearing Held",
+            "Hearing_Held_%":        "% Hearing Held",
+            "Ineligible_Final":      "Found Ineligible (ERO)",
+            "Ineligible_Rate_%":     "% Ineligible / F7 Accepted",
+            "Net_Deletions":         "Net Deletions",
+            "Net_Deletions_%":       "% Net Deletions / F7 Accepted",
+        }
+        PCT_COLS_CB = ["Hearing_Held_%", "Ineligible_Rate_%", "Net_Deletions_%"]
+
+        def _show_table(df, key_cols):
+            show = df[[c for c in COL_LABELS_CB if c in df.columns]].copy()
+            show = show.rename(columns=COL_LABELS_CB)
+            show = show.sort_values("F7 Received", ascending=False).reset_index(drop=True)
+            # Total row
+            tot = {}
+            for c in show.columns:
+                tot[c] = show[c].sum() if show[c].dtype.kind in "iuf" else ""
+            tot[list(show.columns)[0]] = "TOTAL"
+            if "AC No." in tot: tot["AC No."] = ""
+            if "AC Name" in tot: tot["AC Name"] = "ALL"
+            # recompute derived % for total row
+            f7a = show["F7 Accepted"].sum() if "F7 Accepted" in show else 0
+            nd  = show["Net Deletions"].sum() if "Net Deletions" in show else 0
+            inelig = show["Found Ineligible (ERO)"].sum() if "Found Ineligible (ERO)" in show else 0
+            hh  = show["Hearing Held"].sum() if "Hearing Held" in show else 0
+            nd_del = show["Notice Delivered"].sum() if "Notice Delivered" in show else 0
+            if "% Hearing Held" in show:           tot["% Hearing Held"] = safe_div(hh, nd_del)
+            if "% Ineligible / F7 Accepted" in show: tot["% Ineligible / F7 Accepted"] = safe_div(inelig, f7a)
+            if "% Net Deletions / F7 Accepted" in show: tot["% Net Deletions / F7 Accepted"] = safe_div(nd, f7a)
+            show = pd.concat([show, pd.DataFrame([tot])], ignore_index=True)
+            # Format
+            fmt = {}
+            for c in show.columns:
+                if show[c].dtype.kind in "iuf":
+                    fmt[c] = "{:.2f}%" if "%" in c else "{:,.0f}"
+            def _hl(row):
+                first = list(row.index)[0]
+                if str(row[first]) in ("TOTAL","ALL") or row.get("AC Name","") == "ALL":
+                    return ["font-weight:bold;background:#E8F4FD"]*len(row)
+                return [""]*len(row)
+            render_html_table(show.style.apply(_hl, axis=1).format(fmt, na_rep="-"), show)
+            return show
+
+        # ── Page header ───────────────────────────────────────────────────
+        section_title("Form 7 + Notice & Hearing — Combined Report")
+        st.markdown(f"""<div class="note-box">
+<b>Form 7 (Deletion) status</b> from <code>Form_Processing.xlsx</code> combined with
+<b>Notice & Hearing outcomes</b> from <code>Notice.xlsx</code>, joined at District and AC level.<br>
+<span style="color:{BRAND_MUTED}">
+<b>Net Deletions</b> = F7 Accepted &minus; Found Ineligible for Final (ERO).
+Higher Net Deletions means more genuine deletions are moving forward.
+</span></div>""", unsafe_allow_html=True)
+
+        # ── KPI Cards ─────────────────────────────────────────────────────
+        section_title("Key Performance Indicators")
+        def _s(col): return int(dist_rep[col].sum()) if (not dist_rep.empty and col in dist_rep.columns) else 0
+
+        tot_elec  = _s("Electors")
+        f7_rcv    = _s("F7_Received")
+        f7_acc    = _s("F7_Accepted")
+        f7_rej    = _s("F7_Rejected")
+        f7_hrg    = _s("F7_Hearing_Scheduled")
+        nt_del    = _s("Notice_Delivered")
+        hrg_held  = _s("Hearing_Held")
+        inelig    = _s("Ineligible_Final")
+        net_del   = max(0, f7_acc - inelig)
+
+        r1 = st.columns(5)
+        kpi_card(r1[0], "Total Electors",           fmt_int(tot_elec), "",                                        color=BRAND_PRIMARY)
+        kpi_card(r1[1], "Form 7 Received",           fmt_int(f7_rcv),   "",                                        color=BRAND_PRIMARY)
+        kpi_card(r1[2], "Form 7 Accepted",           fmt_int(f7_acc),   f"{fmt_pct(safe_div(f7_acc,f7_rcv))} of received",  color=BRAND_ACCENT)
+        kpi_card(r1[3], "Form 7 Rejected",           fmt_int(f7_rej),   f"{fmt_pct(safe_div(f7_rej,f7_rcv))} of received",  color=BRAND_DANGER)
+        kpi_card(r1[4], "F7 Hearing Scheduled",      fmt_int(f7_hrg),   f"{fmt_pct(safe_div(f7_hrg,f7_rcv))} of received",  color=BRAND_WARN)
+
+        r2 = st.columns(5)
+        kpi_card(r2[0], "Notice Delivered",          fmt_int(nt_del),   "",                                        color=BRAND_PRIMARY)
+        kpi_card(r2[1], "Hearing Held",              fmt_int(hrg_held), f"{fmt_pct(safe_div(hrg_held,nt_del))} of delivered", color=BRAND_ACCENT)
+        kpi_card(r2[2], "Found Ineligible (ERO)",    fmt_int(inelig),   f"{fmt_pct(safe_div(inelig,f7_acc))} of F7 accepted", color=BRAND_DANGER)
+        kpi_card(r2[3], "Net Deletions",             fmt_int(net_del),  "F7 Accepted − Ineligible",                color=BRAND_ACCENT)
+        kpi_card(r2[4], "Net Deletions %",           fmt_pct(safe_div(net_del,f7_acc)), "of F7 Accepted",          color=BRAND_WARN)
+
+        # ── Charts ────────────────────────────────────────────────────────
+        if not dist_rep.empty and "District" in dist_rep.columns:
+            section_title("Visual Analysis")
+            import plotly.express as px
+            c1, c2 = st.columns(2)
+            with c1:
+                fig1 = px.bar(dist_rep.sort_values("F7_Received", ascending=False),
+                    x="District", y=["F7_Received","F7_Accepted","F7_Rejected"],
+                    barmode="group", title="Form 7 — Received / Accepted / Rejected by District",
+                    color_discrete_map={"F7_Received":BRAND_PRIMARY,"F7_Accepted":BRAND_ACCENT,"F7_Rejected":BRAND_DANGER})
+                apply_plotly_theme(fig1); st.plotly_chart(fig1, use_container_width=True)
+            with c2:
+                if "Notice_Delivered" in dist_rep.columns:
+                    fig2 = px.bar(dist_rep.sort_values("Notice_Delivered", ascending=False),
+                        x="District", y=["Notice_Delivered","Hearing_Held","Ineligible_Final"],
+                        barmode="group", title="Notice — Delivered / Hearing Held / Found Ineligible by District",
+                        color_discrete_map={"Notice_Delivered":BRAND_PRIMARY,"Hearing_Held":BRAND_ACCENT,"Ineligible_Final":BRAND_DANGER})
+                    apply_plotly_theme(fig2); st.plotly_chart(fig2, use_container_width=True)
+            if "Net_Deletions" in dist_rep.columns:
+                fig3 = px.bar(dist_rep.sort_values("Net_Deletions", ascending=False),
+                    x="District", y=["F7_Accepted","Ineligible_Final","Net_Deletions"],
+                    barmode="group", title="Net Deletions by District (F7 Accepted − Found Ineligible for Final ERO)",
+                    color_discrete_map={"F7_Accepted":BRAND_ACCENT,"Ineligible_Final":BRAND_DANGER,"Net_Deletions":BRAND_PRIMARY})
+                apply_plotly_theme(fig3); st.plotly_chart(fig3, use_container_width=True)
+
+        # ── District-wise Table ───────────────────────────────────────────
+        if not dist_rep.empty:
+            section_title("District-wise Combined Report")
+            dist_show = _show_table(dist_rep, ["District"])
+
+        # ── AC-wise Table ─────────────────────────────────────────────────
+        if not ac_rep.empty:
+            section_title("AC-wise Combined Report")
+            ac_dist_pick = st.selectbox(
+                "Select District for AC drill-down",
+                ["All Districts"] + sorted(ac_rep["District"].unique()),
+                key="cb_ac_dist_pick"
+            )
+            ac_view = ac_rep if ac_dist_pick == "All Districts" else ac_rep[ac_rep["District"] == ac_dist_pick]
+            ac_show = _show_table(ac_view, ["District","AC_No","AC_Name"])
+
+        # ── Downloads ─────────────────────────────────────────────────────
+        section_title("Downloads")
+        dl1, dl2, dl3, dl4 = st.columns(4)
+
+        if not dist_rep.empty:
+            with dl1:
+                d_xl = build_excel_download({"District-wise": dist_show}, col_labels={}, number_cols=[])
+                st.download_button("📥 District Excel", d_xl,
+                    file_name="Form7_Notice_District.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True, key="cb_dl_dist_xl")
+            with dl3:
+                d_pdf = build_pdf_report(
+                    title="Form 7 + Notice Combined — District Wise",
+                    district_df=dist_show, ac_df=None,
+                    district_cols=list(dist_show.columns), ac_cols=[],
+                    col_labels={}, pct_cols=[c for c in dist_show.columns if "%" in c],
+                    number_cols=[c for c in dist_show.columns if dist_show[c].dtype.kind in "iuf" and "%" not in c],
+                    meta={})
+                st.download_button("📄 District PDF", d_pdf,
+                    file_name="Form7_Notice_District.pdf",
+                    mime="application/pdf",
+                    use_container_width=True, key="cb_dl_dist_pdf")
+
+        if not ac_rep.empty:
+            with dl2:
+                a_xl = build_excel_download({"AC-wise": ac_show}, col_labels={}, number_cols=[])
+                st.download_button("📥 AC-wise Excel", a_xl,
+                    file_name="Form7_Notice_AC.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True, key="cb_dl_ac_xl")
+            with dl4:
+                a_pdf = build_pdf_report(
+                    title="Form 7 + Notice Combined — AC Wise",
+                    district_df=None, ac_df=ac_show,
+                    district_cols=[], ac_cols=list(ac_show.columns),
+                    col_labels={}, pct_cols=[c for c in ac_show.columns if "%" in c],
+                    number_cols=[c for c in ac_show.columns if ac_show[c].dtype.kind in "iuf" and "%" not in c],
+                    meta={})
+                st.download_button("📄 AC-wise PDF", a_pdf,
+                    file_name="Form7_Notice_AC.pdf",
+                    mime="application/pdf",
+                    use_container_width=True, key="cb_dl_ac_pdf")
+
 
 st.markdown(f"""
 <div style="text-align:center; color:{BRAND_MUTED}; font-size:0.78rem; margin-top:2rem; padding-top:1rem; border-top:1px solid #E4E8F0;">
