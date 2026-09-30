@@ -2626,10 +2626,11 @@ elif active_view == "combined":
         # ── Sidebar filters ───────────────────────────────────────────────
         with st.sidebar:
             st.markdown("#### 📋 Form 7 + Notice Filters")
-            _cb_dist_pool = sorted(
-                (fp_df["District"].unique() if fp_ok else []) |
-                set(nh_df["District"].unique() if nh_ok else [])
-            )
+            _cb_dist_pool = sorted(set(
+                list(fp_df["District"].unique()) if fp_ok else []
+            ) | set(
+                list(nh_df["District"].unique()) if nh_ok else []
+            ))
             cb_sel_dist = st.multiselect("District", _cb_dist_pool, default=[], key="cb_dist")
             _cb_ac_pool = set()
             if fp_ok:
